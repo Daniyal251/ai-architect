@@ -10,7 +10,7 @@ interface Props {
   initialMessage?: string | null;          // готовое сообщение для отправки
 }
 
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+const API_URL = '';
 
 export function ChatCopilot({ isOpen, onClose, dashboardContext, agentId, initialStep, initialMessage }: Props) {
   const [messages, setMessages] = useState<DialogMessage[]>([]);

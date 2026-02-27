@@ -1,0 +1,11 @@
+Options -MultiViews
+RewriteEngine On
+
+# Проксируем /api/ на бэкенд (порт 9000)
+RewriteCond %{REQUEST_URI} ^/api/
+RewriteRule ^(.*)$ http://127.0.0.1:9000/$1 [P,L]
+
+# SPA роутинг — всё остальное -> index.html
+RewriteCond %{REQUEST_FILENAME} !-f
+RewriteCond %{REQUEST_FILENAME} !-d
+RewriteRule ^ index.html [L]

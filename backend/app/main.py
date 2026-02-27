@@ -9,6 +9,7 @@ import json
 import logging
 import time
 import asyncio
+import functools
 from dotenv import load_dotenv
 from groq import Groq
 from groq import APIError, APIConnectionError, RateLimitError
@@ -517,6 +518,12 @@ def _build_context(request: GenerateRequest) -> Tuple[str, str]:
     return request.idea, ""
 
 
+async def _run_in_thread(func, *args, **kwargs):
+    """Совместимая замена asyncio.to_thread для Python 3.8+"""
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, functools.partial(func, *args, **kwargs))
+
+
 async def _run_pipeline(session_id: str, idea_text: str, full_context: str) -> None:
     """Запускает 4-шаговый пайплайн в фоне. Каждый Groq-вызов — в отдельном потоке."""
 
@@ -536,7 +543,7 @@ async def _run_pipeline(session_id: str, idea_text: str, full_context: str) -> N
         # Шаг 1: Аналитик
         _set("Декомпозиция бизнес-задачи...", 1)
         logger.info("Шаг 1/4: Аналитик...")
-        analyst_result = await asyncio.to_thread(
+        analyst_result = await _run_in_thread(
             call_groq, PROMPT_ANALYST.format(idea=idea_text, context=full_context),
             fallback_result=FALLBACK_ANALYST
         )
@@ -544,7 +551,7 @@ async def _run_pipeline(session_id: str, idea_text: str, full_context: str) -> N
         # Шаг 2: Архитектор
         _set("Проектирование архитектуры...", 2)
         logger.info("Шаг 2/4: Архитектор...")
-        architect_result = await asyncio.to_thread(
+        architect_result = await _run_in_thread(
             call_groq, PROMPT_ARCHITECT.format(
                 task=analyst_result.get("task", "Автоматизация"),
                 integrations=", ".join(analyst_result.get("integrations", [])),
@@ -555,7 +562,7 @@ async def _run_pipeline(session_id: str, idea_text: str, full_context: str) -> N
         # Шаг 3: Визуализатор
         _set("Отрисовка схемы...", 3)
         logger.info("Шаг 3/4: Визуализатор...")
-        visualizer_result = await asyncio.to_thread(
+        visualizer_result = await _run_in_thread(
             call_groq, PROMPT_VISUALIZER.format(
                 task=analyst_result.get("task", "Автоматизация"),
                 inputs=", ".join(analyst_result.get("inputs", [])),
@@ -567,7 +574,7 @@ async def _run_pipeline(session_id: str, idea_text: str, full_context: str) -> N
         # Шаг 4: PM
         _set("Расчёт метрик и плана...", 4)
         logger.info("Шаг 4/4: PM...")
-        pm_result = await asyncio.to_thread(
+        pm_result = await _run_in_thread(
             call_groq, PROMPT_PM.format(task=analyst_result.get("task", "Автоматизация")),
             fallback_result=FALLBACK_PM
         )

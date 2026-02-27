@@ -62,7 +62,7 @@ export function BillingPage() {
   const handleUpgrade = async (plan: string) => {
     const token = localStorage.getItem('token');
     try {
-      const response = await fetch('http://localhost:8000/api/upgrade', {
+      const response = await fetch('/api/upgrade', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

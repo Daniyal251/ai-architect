@@ -1,8 +1,7 @@
 import { useState } from 'react';
 import type { AgentResponse, GenerationProgress, DialogMessage } from '../types.js';
 
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
-
+const API_URL = '';
 /** Подписывается на SSE и резолвит Promise когда приходит финальный результат */
 function waitForResult(sessionId: string, onStage: (stage: string) => void): Promise<AgentResponse> {
   return new Promise((resolve, reject) => {

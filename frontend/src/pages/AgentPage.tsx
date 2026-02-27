@@ -4,7 +4,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { Dashboard } from '../components/Dashboard';
 import type { AgentResponse } from '../types.js';
 
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+const API_URL = '';
 
 export function AgentPage() {
   const { id } = useParams<{ id: string }>();

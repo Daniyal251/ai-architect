@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import type { SavedAgentListItem } from '../types.js';
 
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+const API_URL = '';
 
 export function MyAgentsPage() {
   const { token, username, logout } = useAuth();
