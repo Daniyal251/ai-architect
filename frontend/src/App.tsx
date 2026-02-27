@@ -45,14 +45,19 @@ function App() {
   };
 
   const handleClarificationComplete = (messages: DialogMessage[]) => {
-    setShowClarification(false);
     setDialogMessages(messages);
-    generateAgent(idea, messages);
+    setShowClarification(false);
+    // Генерируем агент с контекстом диалога
+    setTimeout(() => {
+      generateAgent(idea, messages);
+    }, 100);
   };
 
   const handleSkipClarification = () => {
     setShowClarification(false);
-    generateAgent(idea);
+    setTimeout(() => {
+      generateAgent(idea);
+    }, 100);
   };
 
   if (!isAuthenticated) {

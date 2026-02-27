@@ -42,20 +42,23 @@ export function ClarificationDialog({ idea, onComplete, onSkip }: Props) {
         });
 
         const data: ClarifyResponse = await response.json();
+        console.log('Clarify response:', data);
 
         if (data.needs_clarification && data.questions.length > 0) {
           setQuestions(data.questions);
           setStep('dialog');
-          setMessages([{
-            role: 'assistant',
-            content: 'У меня есть несколько уточняющих вопросов:'
-          }]);
+          // Добавляем первое сообщение с идеей
+          setMessages([
+            { role: 'user', content: idea },
+            { role: 'assistant', content: 'У меня есть несколько уточняющих вопросов:' }
+          ]);
         } else {
           // Вопросы не нужны, сразу переходим к генерации
-          onComplete([{
-            role: 'user',
-            content: idea
-          }]);
+          console.log('No clarification needed, generating...');
+          onComplete([
+            { role: 'user', content: idea },
+            { role: 'assistant', content: data.summary || idea }
+          ]);
         }
       } catch (err) {
         console.error('Clarify error:', err);
@@ -67,7 +70,7 @@ export function ClarificationDialog({ idea, onComplete, onSkip }: Props) {
     };
 
     analyzeIdea();
-  }, [idea]);
+  }, [idea, onComplete, token]);
 
   const handleAnswerSubmit = (question: string, index: number) => {
     const newMessages: DialogMessage[] = [
@@ -75,14 +78,18 @@ export function ClarificationDialog({ idea, onComplete, onSkip }: Props) {
       { role: 'assistant', content: question },
       { role: 'user', content: currentAnswer },
     ];
+    console.log('Answer submitted, new messages:', newMessages);
     setMessages(newMessages);
     setCurrentAnswer('');
-    
+
     // Удаляем отвеченный вопрос
     const remainingQuestions = questions.filter((_, i) => i !== index);
-    
+    console.log('Remaining questions:', remainingQuestions);
+
     if (remainingQuestions.length === 0) {
       setStep('complete');
+      console.log('All questions answered, calling onComplete...');
+      // Передаем все сообщения включая оригинальную идею
       setTimeout(() => onComplete(newMessages), 500);
     } else {
       setQuestions(remainingQuestions);
