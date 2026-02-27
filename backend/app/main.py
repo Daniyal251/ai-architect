@@ -401,25 +401,32 @@ async def get_generation_progress(session_id: str):
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 
+class GenerateRequest(BaseModel):
+    """Запрос на генерацию агента"""
+    idea: str
+    attachments: Optional[List[str]] = None
+    original_idea: Optional[str] = None  # Для диалога
+    messages: Optional[List[DialogMessage]] = None  # Для диалога
+
+
 @app.post("/api/generate", response_model=AgentResponse)
 async def generate_agent(
-    request: AgentRequest, 
-    current_user: User = Depends(get_current_user),
-    dialog_context: Optional[DialogContext] = None
+    request: GenerateRequest,
+    current_user: User = Depends(get_current_user)
 ):
     """
     Генерирует архитектуру ИИ-агента по описанию идеи
-    dialog_context - опционально, если была сессия уточнений
+    request.messages - опционально, если была сессия уточнений
     """
     import uuid
     session_id = str(uuid.uuid4())
     generation_progress[session_id] = {"stage": "Инициализация...", "step": 0, "total": 4, "completed": False}
-    
+
     # Формируем полный контекст идеи
-    if dialog_context:
+    if request.messages and request.original_idea:
         # Собираем всю историю в одну строку
-        context_lines = [f"Original idea: {dialog_context.original_idea}"]
-        for msg in dialog_context.messages:
+        context_lines = [f"Original idea: {request.original_idea}"]
+        for msg in request.messages:
             role = "User" if msg.role == "user" else "Assistant"
             context_lines.append(f"{role}: {msg.content}")
         full_context = "\n".join(context_lines)
