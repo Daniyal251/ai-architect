@@ -247,6 +247,42 @@ PROMPT_PM = """Ты — проект-менеджер. Создай план в�
   "risk_status": "normal" или "warning" или "high"
 }}"""
 
+PROMPT_CHAT_ASSISTANT = """Ты — умный помощник AI Architect, который помогает пользователю доработать архитектуру ИИ-агента.
+
+У тебя есть:
+1. **Контекст дашборда** — вся информация о сгенерированном агенте (профиль, стек, план, ROI)
+2. **История переписки** — предыдущие вопросы и ответы
+3. **Текущий вопрос пользователя**
+
+Твоя задача:
+- Отвечать на вопросы по архитектуре
+- Предлагать улучшения (замена технологий, оптимизация плана)
+- Давать пошаговые инструкции по интеграции
+- Если пользователь просит изменить что-то — предлагай конкретные действия
+
+**Важно:**
+- Отвечай кратко и по делу
+- Если вопрос про технологию — объясни плюсы/минусы
+- Если вопрос про интеграцию — дай пошаговую инструкцию
+- В конце ответа предлагай 1-3 подсказки для следующих действий
+
+Контекст дашборда:
+- Имя агента: {agent_name}
+- Роль: {agent_role}
+- Описание: {description}
+- Стек технологий: {tech_stack}
+- Mermaid схема: {mermaid_code}
+
+История переписки: {conversation_history}
+
+Вопрос пользователя: {message}
+
+Верни ответ в формате JSON:
+{{
+  "response": "твой ответ пользователю",
+  "suggested_actions": ["подсказка 1", "подсказка 2"]
+}}"""
+
 
 def call_groq(prompt: str, max_retries: int = 3) -> dict:
     """Вызов Groq API с retry-логикой"""
@@ -409,6 +445,19 @@ class GenerateRequest(BaseModel):
     messages: Optional[List[DialogMessage]] = None  # Для диалога
 
 
+class ChatRequest(BaseModel):
+    """Запрос в чат-помощник"""
+    message: str
+    dashboard_context: AgentResponse  # Контекст дашборда
+    conversation_history: Optional[List[DialogMessage]] = None  # История чата
+
+
+class ChatResponse(BaseModel):
+    """Ответ чат-помощника"""
+    response: str
+    suggested_actions: Optional[List[str]] = None  # Подсказки действий
+
+
 @app.post("/api/generate", response_model=AgentResponse)
 async def generate_agent(
     request: GenerateRequest,
@@ -528,6 +577,53 @@ async def generate_agent(
             await asyncio.sleep(30)
             generation_progress.pop(session_id, None)
         asyncio.create_task(cleanup())
+
+
+@app.post("/api/chat", response_model=ChatResponse)
+async def chat_with_assistant(
+    request: ChatRequest,
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Чат-помощник для доработки архитектуры агента
+    """
+    try:
+        logger.info(f"Чат: пользователь задаёт вопрос: {request.message[:100]}...")
+        
+        # Формируем историю переписки
+        conversation_history_str = ""
+        if request.conversation_history:
+            for msg in request.conversation_history[-10:]:  # Последние 10 сообщений
+                role = "Пользователь" if msg.role == "user" else "Ассистент"
+                conversation_history_str += f"{role}: {msg.content}\n"
+        
+        if not conversation_history_str:
+            conversation_history_str = "Нет предыдущих сообщений"
+        
+        # Формируем промпт
+        chat_prompt = PROMPT_CHAT_ASSISTANT.format(
+            agent_name=request.dashboard_context.agent_profile.name,
+            agent_role=request.dashboard_context.agent_profile.role,
+            description=request.dashboard_context.description,
+            tech_stack=", ".join(request.dashboard_context.tech_stack),
+            mermaid_code=request.dashboard_context.mermaid_code[:500] if request.dashboard_context.mermaid_code else "Нет схемы",
+            conversation_history=conversation_history_str,
+            message=request.message
+        )
+        
+        result = call_groq(chat_prompt)
+        
+        response_data = {
+            "response": result.get("response", "Извините, не могу ответить на этот вопрос."),
+            "suggested_actions": result.get("suggested_actions", [])
+        }
+        
+        logger.info("Чат: ответ сформирован")
+        return response_data
+        
+    except Exception as e:
+        logger.error(f"Ошибка чата: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 if __name__ == "__main__":

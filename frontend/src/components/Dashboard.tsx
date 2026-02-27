@@ -4,6 +4,8 @@ import { FlowDiagram } from './FlowDiagram';
 import { Timeline } from './Timeline';
 import { ROICalculator } from './ROICalculator';
 import { SystemPrompt } from './SystemPrompt';
+import { ChatCopilot } from './ChatCopilot';
+import { useState } from 'react';
 
 interface DashboardProps {
   data: AgentResponse;
@@ -13,6 +15,7 @@ interface DashboardProps {
 }
 
 export function Dashboard({ data, onReset, username, onLogout }: DashboardProps) {
+  const [isChatOpen, setIsChatOpen] = useState(false);
   return (
     <div className="min-h-screen p-8">
       <div className="max-w-7xl mx-auto">
@@ -22,6 +25,13 @@ export function Dashboard({ data, onReset, username, onLogout }: DashboardProps)
           </h1>
           <div className="flex items-center gap-4">
             <span className="text-sm text-gray-400">👤 {username}</span>
+            <button
+              onClick={() => setIsChatOpen(true)}
+              className="px-4 py-2 bg-gradient-to-r from-cyan-500 to-purple-500 rounded-lg 
+                         hover:opacity-90 transition flex items-center gap-2"
+            >
+              💬 Помощник
+            </button>
             <button className="px-4 py-2 bg-white/10 rounded-lg hover:bg-white/20 transition">
               📄 Экспорт PDF
             </button>
@@ -66,6 +76,13 @@ export function Dashboard({ data, onReset, username, onLogout }: DashboardProps)
           </div>
         )}
       </div>
+
+      {/* Chat Copilot */}
+      <ChatCopilot
+        isOpen={isChatOpen}
+        onClose={() => setIsChatOpen(false)}
+        dashboardContext={data}
+      />
     </div>
   );
 }
