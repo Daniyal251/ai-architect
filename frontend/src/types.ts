@@ -25,4 +25,13 @@ export interface AgentResponse {
   implementation_plan: ImplementationStep[];
   roi: ROI;
   risk_status: 'normal' | 'warning' | 'high';
+  session_id?: string;
+}
+
+export interface GenerationProgress {
+  stage: string;
+  step: number;
+  total: number;
+  completed?: boolean;
+  error?: boolean;
 }
