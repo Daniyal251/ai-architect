@@ -79,7 +79,8 @@ npm run build
 
 ```env
 GROQ_API_KEY=gsk_your_key_here
-DATABASE_URL=mysql://u3415770_default:eJV6f91SQ9O9j9Kg@localhost/ai_architect
+# ЗАМЕНИТЕ YOUR_DB_PASSWORD на ваш реальный пароль
+DATABASE_URL=mysql://u3415770_default:YOUR_DB_PASSWORD@localhost/ai_architect
 JWT_SECRET_KEY=super-secret-key-32-chars-minimum
 FRONTEND_URL=https://your-domain.ru
 ```

@@ -111,7 +111,8 @@ nano .env
 GROQ_API_KEY=gsk_your_actual_api_key_here
 
 # Database (Reg.ru MySQL)
-DATABASE_URL=mysql://u3415770_default:eJV6f91SQ9O9j9Kg@localhost/ai_architect
+# ЗАМЕНИТЕ password на ваш реальный пароль от БД
+DATABASE_URL=mysql://u3415770_default:YOUR_DB_PASSWORD@localhost/ai_architect
 
 # JWT Secret (минимум 32 символа!)
 JWT_SECRET_KEY=super-secret-key-min-32-chars-change-me
