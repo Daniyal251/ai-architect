@@ -3,6 +3,7 @@
 Автоматически определяет тип БД из DATABASE_URL
 """
 import os
+from typing import Optional, List, Dict, Any
 from sqlalchemy import create_engine, Column, String, Text, DateTime, Boolean, func, text
 from sqlalchemy.orm import declarative_base, sessionmaker
 from datetime import datetime
@@ -121,7 +122,7 @@ class Database:
 
     # ── Users ──────────────────────────────────────────────────────────────────
 
-    def create_user(self, username: str, password: str, email: str | None = None) -> dict:
+    def create_user(self, username: str, password: str, email: Optional[str] = None) -> Dict[str, Any]:
         db = SessionLocal()
         try:
             if db.query(UserModel).filter(UserModel.username == username).first():

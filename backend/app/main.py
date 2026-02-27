@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
-from typing import List, Optional
+from typing import List, Optional, Dict, Any, Tuple
 import os
 import json
 import logging
@@ -313,7 +313,7 @@ PROMPT_CHAT_ASSISTANT = """Ты — активный помощник-испол
 }}"""
 
 
-def call_groq(prompt: str, max_retries: int = 3, fallback_result: dict | None = None) -> dict:
+def call_groq(prompt: str, max_retries: int = 3, fallback_result: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Вызов Groq API с retry-логикой и fallback
     
     Args:
@@ -505,7 +505,7 @@ class ChatResponse(BaseModel):
     suggested_actions: Optional[List[str]] = None  # Подсказки действий
 
 
-def _build_context(request: GenerateRequest) -> tuple[str, str]:
+def _build_context(request: GenerateRequest) -> Tuple[str, str]:
     """Возвращает (idea_text, full_context) из запроса"""
     if request.messages and request.original_idea:
         context_lines = [f"Original idea: {request.original_idea}"]
@@ -520,7 +520,7 @@ def _build_context(request: GenerateRequest) -> tuple[str, str]:
 async def _run_pipeline(session_id: str, idea_text: str, full_context: str) -> None:
     """Запускает 4-шаговый пайплайн в фоне. Каждый Groq-вызов — в отдельном потоке."""
 
-    def _set(stage: str, step: int, *, done: bool = False, result: dict | None = None) -> None:
+    def _set(stage: str, step: int, *, done: bool = False, result: Optional[Dict[str, Any]] = None) -> None:
         generation_progress[session_id] = {
             "stage": stage, "step": step, "total": 4,
             "completed": done, **({"result": result} if result else {}),
