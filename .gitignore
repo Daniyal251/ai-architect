@@ -1,16 +1,46 @@
 # Python
 backend/__pycache__/
 backend/*.pyc
+backend/*.pyo
+backend/*.db
 backend/.env
+backend/ai_architect.db
 
 # Node
 frontend/node_modules/
 frontend/dist/
+frontend/.env
 
 # IDE
 .vscode/
 .idea/
+*.swp
+*.swo
 
 # OS
 .DS_Store
 Thumbs.db
+desktop.ini
+
+# Logs
+*.log
+logs/
+
+# Environment
+.env
+.env.local
+.env.production
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Build
+backend/build/
+frontend/build/
+
+# Temporary
+tmp/
+temp/
+*.tmp

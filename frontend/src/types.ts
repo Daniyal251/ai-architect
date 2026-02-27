@@ -10,10 +10,21 @@ export interface ImplementationStep {
   duration: string;
 }
 
-export interface ROI {
-  hours_saved: number;
-  cost_saved: number;
-  chart_data: { month: string; savings: number }[];
+export interface KeyMetric {
+  label: string;   // "Ориентировочная стоимость"
+  value: string;   // "300,000 - 800,000"
+  unit: string;    // "₽"
+}
+
+export interface ResourceGroup {
+  category: string;   // "Запчасти", "Инструменты"
+  items: string[];
+}
+
+export interface ProjectMetrics {
+  project_type: 'technical' | 'business' | 'research' | 'other';
+  key_metrics: KeyMetric[];
+  resources_needed: ResourceGroup[];
 }
 
 export interface AgentResponse {
@@ -23,7 +34,7 @@ export interface AgentResponse {
   system_prompt: string;
   tech_stack: string[];
   implementation_plan: ImplementationStep[];
-  roi: ROI;
+  project_metrics: ProjectMetrics;
   risk_status: 'normal' | 'warning' | 'high';
   session_id?: string;
 }
@@ -34,11 +45,13 @@ export interface GenerationProgress {
   total: number;
   completed?: boolean;
   error?: boolean;
+  result?: AgentResponse; // финальный результат приходит в последнем SSE-событии
 }
 
 // Авторизация
 export interface User {
   username: string;
+  plan?: string;
   disabled?: boolean;
 }
 
@@ -50,6 +63,20 @@ export interface LoginRequest {
 export interface RegisterRequest {
   username: string;
   password: string;
+  email?: string;
+}
+
+// Тарифы и лимиты
+export interface UsageInfo {
+  plan: 'free' | 'starter' | 'pro' | 'admin';
+  plan_name: string;
+  generations_used: number;
+  generations_limit: number;   // -1 = безлимит
+  generations_remaining: number;
+  agents_count: number;
+  agents_limit: number;        // -1 = безлимит
+  can_generate: boolean;
+  can_save_agent: boolean;
 }
 
 export interface AuthToken {
@@ -73,4 +100,14 @@ export interface ClarifyResponse {
   needs_clarification: boolean;
   questions: string[];
   summary: string;
+}
+
+// Сохранённые агенты
+export interface SavedAgentListItem {
+  id: string;
+  name: string;
+  role: string;
+  avatar: string;
+  idea: string;
+  created_at: string;
 }

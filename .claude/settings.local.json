@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(find /c/Users/wuqqr/Desktop/ai-architect/frontend/src/components -type f -name \"*.tsx\" -exec basename {} ;)",
+      "Bash(ls -la /c/Users/wuqqr/Desktop/ai-architect/frontend/*.*)",
+      "Bash(python -m venv venv)",
+      "Bash(source venv/Scripts/activate)",
+      "Bash(pip install -r requirements.txt -q)",
+      "Bash(npm install react-router-dom --save)",
+      "Bash(npx tsc --noEmit)",
+      "Bash(echo \"EXIT: $?\")"
+    ]
+  }
+}

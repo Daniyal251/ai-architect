@@ -1,15 +1,15 @@
 import { useState } from 'react';
-import type { LoginRequest, RegisterRequest } from '../types.js';
 
 interface Props {
-  onAuthSuccess: (token: string, username: string) => void;
+  onAuthSuccess: (token: string, username: string, plan: string) => void;
 }
 
-const API_URL = 'http://localhost:8000';
+const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
 export function Auth({ onAuthSuccess }: Props) {
   const [isLogin, setIsLogin] = useState(true);
   const [username, setUsername] = useState('');
+  const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
@@ -21,7 +21,9 @@ export function Auth({ onAuthSuccess }: Props) {
 
     try {
       const endpoint = isLogin ? '/api/auth/login' : '/api/auth/register';
-      const body: LoginRequest | RegisterRequest = { username, password };
+      const body = isLogin
+        ? { username, password }
+        : { username, password, email: email || undefined };
 
       const response = await fetch(`${API_URL}${endpoint}`, {
         method: 'POST',
@@ -36,14 +38,11 @@ export function Auth({ onAuthSuccess }: Props) {
       }
 
       if (isLogin) {
-        // Сохраняем токен
-        localStorage.setItem('token', data.access_token);
-        localStorage.setItem('username', data.username);
-        onAuthSuccess(data.access_token, data.username);
+        onAuthSuccess(data.access_token, data.username, data.plan || 'free');
       } else {
-        // После регистрации сразу входим
         setIsLogin(true);
         setError('Регистрация успешна! Теперь войдите.');
+        setEmail('');
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Произошла ошибка');
@@ -60,45 +59,62 @@ export function Auth({ onAuthSuccess }: Props) {
             AI Architect
           </h1>
           <p className="text-gray-400">Создайте ИИ-агента за 5 минут</p>
+          {!isLogin && (
+            <p className="text-xs text-cyan-400 mt-2">Бесплатно: 3 генерации в месяц</p>
+          )}
         </div>
 
-        <form onSubmit={handleSubmit} className="space-y-6">
+        <form onSubmit={handleSubmit} className="space-y-5">
           <div>
-            <label className="block text-sm font-medium text-gray-300 mb-2">
-              Имя пользователя
-            </label>
+            <label className="block text-sm font-medium text-gray-300 mb-2">Имя пользователя</label>
             <input
               type="text"
               value={username}
               onChange={(e) => setUsername(e.target.value)}
-              className="w-full px-4 py-3 bg-white/5 border border-white/10 rounded-xl 
-                         text-white placeholder-gray-500 focus:outline-none focus:border-cyan-500 
+              className="w-full px-4 py-3 bg-white/5 border border-white/10 rounded-xl
+                         text-white placeholder-gray-500 focus:outline-none focus:border-cyan-500
                          focus:ring-1 focus:ring-cyan-500 transition"
-              placeholder="admin"
+              placeholder="username"
               required
             />
           </div>
 
+          {!isLogin && (
+            <div>
+              <label className="block text-sm font-medium text-gray-300 mb-2">
+                Email <span className="text-gray-500">(необязательно)</span>
+              </label>
+              <input
+                type="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                className="w-full px-4 py-3 bg-white/5 border border-white/10 rounded-xl
+                           text-white placeholder-gray-500 focus:outline-none focus:border-cyan-500
+                           focus:ring-1 focus:ring-cyan-500 transition"
+                placeholder="you@example.com"
+              />
+            </div>
+          )}
+
           <div>
-            <label className="block text-sm font-medium text-gray-300 mb-2">
-              Пароль
-            </label>
+            <label className="block text-sm font-medium text-gray-300 mb-2">Пароль</label>
             <input
               type="password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              className="w-full px-4 py-3 bg-white/5 border border-white/10 rounded-xl 
-                         text-white placeholder-gray-500 focus:outline-none focus:border-cyan-500 
+              className="w-full px-4 py-3 bg-white/5 border border-white/10 rounded-xl
+                         text-white placeholder-gray-500 focus:outline-none focus:border-cyan-500
                          focus:ring-1 focus:ring-cyan-500 transition"
               placeholder="••••••••"
               required
+              minLength={6}
             />
           </div>
 
           {error && (
             <div className={`p-3 rounded-xl text-sm ${
-              error.includes('успешна') 
-                ? 'bg-green-500/20 border border-green-500/30 text-green-400' 
+              error.includes('успешна')
+                ? 'bg-green-500/20 border border-green-500/30 text-green-400'
                 : 'bg-red-500/20 border border-red-500/30 text-red-400'
             }`}>
               {error}
@@ -108,31 +124,22 @@ export function Auth({ onAuthSuccess }: Props) {
           <button
             type="submit"
             disabled={loading}
-            className="w-full py-3 bg-gradient-to-r from-cyan-500 to-purple-500 
-                       rounded-xl font-medium text-white hover:opacity-90 transition 
+            className="w-full py-3 bg-gradient-to-r from-cyan-500 to-purple-500
+                       rounded-xl font-medium text-white hover:opacity-90 transition
                        disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            {loading ? 'Загрузка...' : (isLogin ? 'Войти' : 'Зарегистрироваться')}
+            {loading ? 'Загрузка...' : (isLogin ? 'Войти' : 'Создать аккаунт')}
           </button>
         </form>
 
         <div className="mt-6 text-center">
           <button
-            onClick={() => {
-              setIsLogin(!isLogin);
-              setError('');
-            }}
+            onClick={() => { setIsLogin(!isLogin); setError(''); }}
             className="text-sm text-gray-400 hover:text-white transition"
           >
-            {isLogin ? 'Нет аккаунта? Зарегистрироваться' : 'Уже есть аккаунт? Войти'}
+            {isLogin ? 'Нет аккаунта? Зарегистрироваться бесплатно' : 'Уже есть аккаунт? Войти'}
           </button>
         </div>
-
-        {isLogin && (
-          <div className="mt-4 p-3 bg-white/5 rounded-xl text-xs text-gray-500 text-center">
-            По умолчанию: admin / admin123
-          </div>
-        )}
       </div>
     </div>
   );

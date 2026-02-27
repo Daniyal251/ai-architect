@@ -19,12 +19,14 @@ class Token(BaseModel):
     access_token: str
     token_type: str = "bearer"
     username: str
+    plan: Optional[str] = "free"
 
 
 class UserCreate(BaseModel):
     """Модель создания пользователя"""
     username: str
     password: str
+    email: Optional[str] = None
 
 
 class UserLogin(BaseModel):
@@ -36,6 +38,7 @@ class UserLogin(BaseModel):
 class User(BaseModel):
     """Модель пользователя"""
     username: str
+    plan: Optional[str] = "free"
     disabled: Optional[bool] = None
 
 

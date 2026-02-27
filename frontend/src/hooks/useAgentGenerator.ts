@@ -1,88 +1,118 @@
 import { useState } from 'react';
 import type { AgentResponse, GenerationProgress, DialogMessage } from '../types.js';
 
-const API_URL = 'http://localhost:8000';
+const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+
+/** Подписывается на SSE и резолвит Promise когда приходит финальный результат */
+function waitForResult(sessionId: string, onStage: (stage: string) => void): Promise<AgentResponse> {
+  return new Promise((resolve, reject) => {
+    const eventSource = new EventSource(`${API_URL}/api/generate/${sessionId}/progress`);
+
+    eventSource.onmessage = (event) => {
+      const data: GenerationProgress & { result?: AgentResponse } = JSON.parse(event.data);
+
+      if (data.stage) onStage(data.stage);
+
+      if (data.error) {
+        eventSource.close();
+        reject(new Error(data.stage || 'Ошибка генерации'));
+        return;
+      }
+
+      if (data.completed && data.result) {
+        eventSource.close();
+        resolve(data.result);
+      }
+    };
+
+    eventSource.onerror = () => {
+      eventSource.close();
+      reject(new Error('Потеряно соединение с сервером'));
+    };
+  });
+}
 
 export function useAgentGenerator() {
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<AgentResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loadingStage, setLoadingStage] = useState('');
-  const [sessionId, setSessionId] = useState<string | null>(null);
-  const [dialogMessages, setDialogMessages] = useState<DialogMessage[]>([]);
 
-  const subscribeToProgress = (sessionId: string): Promise<void> => {
-    return new Promise((resolve) => {
-      const eventSource = new EventSource(`${API_URL}/api/generate/${sessionId}/progress`);
-      
-      eventSource.onmessage = (event) => {
-        const data: GenerationProgress = JSON.parse(event.data);
-        setLoadingStage(data.stage);
-        
-        if (data.completed || data.error) {
-          eventSource.close();
-          resolve();
-        }
-      };
-      
-      eventSource.onerror = () => {
-        eventSource.close();
-        resolve();
-      };
-    });
-  };
-
-  const generateAgent = async (idea: string, dialogContext?: DialogMessage[]) => {
-    console.log('generateAgent called with:', { idea, dialogContext });
+  /**
+   * Генерирует агента, автоматически сохраняет в БД.
+   * Возвращает agentId при успехе, null при ошибке.
+   */
+  const generateAgent = async (
+    idea: string,
+    dialogContext?: DialogMessage[],
+  ): Promise<string | null> => {
     setLoading(true);
     setError(null);
     setResult(null);
     setLoadingStage('Инициализация...');
-    setDialogMessages(dialogContext || []);
 
     const token = localStorage.getItem('token');
 
     try {
+      // idea всегда включаем — Pydantic требует его как обязательное поле
       const body = dialogContext
-        ? {
-            original_idea: idea,
-            messages: dialogContext,
-          }
+        ? { idea, original_idea: idea, messages: dialogContext }
         : { idea };
 
-      console.log('Sending request to /api/generate:', body);
-
-      // Запускаем генерацию и подписываемся на прогресс одновременно
-      const generatePromise = fetch(`${API_URL}/api/generate`, {
+      // 1. Запускаем генерацию — бэкенд возвращает session_id сразу
+      const startRes = await fetch(`${API_URL}/api/generate`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`,
+          Authorization: `Bearer ${token}`,
         },
-        body: JSON.stringify(dialogContext ? body : { idea }),
+        body: JSON.stringify(body),
       });
 
-      // Ждём первый ответ для получения session_id
-      const response = await generatePromise;
-
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({ detail: 'Ошибка генерации' }));
-        throw new Error(errorData.detail || 'Ошибка генерации');
+      if (!startRes.ok) {
+        const err = await startRes.json().catch(() => ({ detail: 'Ошибка запуска генерации' }));
+        if (startRes.status === 402) {
+          const detail = err.detail || {};
+          throw new Error(typeof detail === 'object'
+            ? (detail.message || 'Лимит генераций исчерпан')
+            : String(detail));
+        }
+        throw new Error(typeof err.detail === 'string' ? err.detail : JSON.stringify(err));
       }
 
-      const data = await response.json();
-      console.log('Generation response:', data);
+      const { session_id } = await startRes.json();
 
-      // Если есть session_id, подписываемся на SSE прогресс
-      if (data.session_id) {
-        setSessionId(data.session_id);
-        await subscribeToProgress(data.session_id);
-      }
+      // 2. Подписываемся на SSE — получаем прогресс в реальном времени + результат
+      const data = await waitForResult(session_id, setLoadingStage);
 
       setResult(data);
+
+      // 3. Автосохранение в БД
+      try {
+        const saveRes = await fetch(`${API_URL}/api/agents/save`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({ idea, agent_data: data }),
+        });
+
+        if (saveRes.ok) {
+          const { id } = await saveRes.json();
+          return id;
+        }
+      } catch (saveErr) {
+        console.error('Автосохранение не удалось:', saveErr);
+      }
+
+      return null;
     } catch (err) {
       console.error('Generation error:', err);
-      setError(err instanceof Error ? err.message : 'Не удалось сгенерировать агента. Попробуйте снова.');
+      setError(
+        err instanceof Error ? err.message : 'Не удалось сгенерировать агента. Попробуйте снова.',
+      );
+      return null;
     } finally {
       setLoading(false);
       setLoadingStage('');
@@ -92,9 +122,7 @@ export function useAgentGenerator() {
   const reset = () => {
     setResult(null);
     setError(null);
-    setSessionId(null);
-    setDialogMessages([]);
   };
 
-  return { loading, result, error, loadingStage, dialogMessages, generateAgent, reset };
+  return { loading, result, error, loadingStage, generateAgent, reset };
 }
