@@ -8,9 +8,11 @@ import { SystemPrompt } from './SystemPrompt';
 interface DashboardProps {
   data: AgentResponse;
   onReset: () => void;
+  username: string;
+  onLogout: () => void;
 }
 
-export function Dashboard({ data, onReset }: DashboardProps) {
+export function Dashboard({ data, onReset, username, onLogout }: DashboardProps) {
   return (
     <div className="min-h-screen p-8">
       <div className="max-w-7xl mx-auto">
@@ -18,18 +20,25 @@ export function Dashboard({ data, onReset }: DashboardProps) {
           <h1 className="text-3xl font-bold bg-gradient-to-r from-cyan-400 to-purple-500 bg-clip-text text-transparent">
             Архитектура ИИ-агента
           </h1>
-          <div className="flex gap-4">
+          <div className="flex items-center gap-4">
+            <span className="text-sm text-gray-400">👤 {username}</span>
             <button className="px-4 py-2 bg-white/10 rounded-lg hover:bg-white/20 transition">
               📄 Экспорт PDF
             </button>
             <button className="px-4 py-2 bg-white/10 rounded-lg hover:bg-white/20 transition">
               🔗 Поделиться
             </button>
-            <button 
+            <button
               onClick={onReset}
               className="px-4 py-2 bg-gradient-to-r from-cyan-500 to-purple-500 rounded-lg hover:opacity-90 transition"
             >
               Новый агент
+            </button>
+            <button
+              onClick={onLogout}
+              className="px-4 py-2 bg-white/10 rounded-lg hover:bg-red-500/20 hover:text-red-400 transition"
+            >
+              Выйти
             </button>
           </div>
         </header>

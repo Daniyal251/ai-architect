@@ -1,6 +1,7 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Depends, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
 from typing import List, Optional
 import os
@@ -11,6 +12,16 @@ import asyncio
 from dotenv import load_dotenv
 from groq import Groq
 from groq import APIError, APIConnectionError, RateLimitError
+from app.auth import (
+    create_access_token, 
+    decode_access_token, 
+    get_password_hash,
+    UserCreate, 
+    UserLogin, 
+    Token,
+    User
+)
+from app.database import user_db
 
 load_dotenv()
 
@@ -19,6 +30,9 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="AI Architect API")
+
+# Security схема
+security = HTTPBearer(auto_error=False)
 
 # Разрешаем CORS для фронтенда
 app.add_middleware(
@@ -36,6 +50,46 @@ client = Groq(api_key=os.getenv("GROQ_API_KEY"))
 generation_progress = {}
 
 
+async def get_current_user(
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security)
+) -> User:
+    """Получение текущего пользователя из токена"""
+    if not credentials:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Требуется авторизация",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    
+    token = credentials.credentials
+    payload = decode_access_token(token)
+    
+    if not payload:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Неверный токен",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    
+    username = payload.get("sub")
+    if not username:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Неверный токен",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    
+    user = user_db.get_user(username)
+    if not user or user.get("disabled"):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Пользователь не найден",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    
+    return User(username=username)
+
+
 class GenerationStage(BaseModel):
     """Модель для передачи этапа генерации"""
     stage: str
@@ -47,6 +101,31 @@ class GenerationStage(BaseModel):
 class AgentRequest(BaseModel):
     idea: str
     attachments: Optional[List[str]] = None
+
+
+class ClarifyRequest(BaseModel):
+    """Запрос на уточнение идеи"""
+    idea: str
+    conversation_history: Optional[List[dict]] = None  # История диалога
+
+
+class ClarifyResponse(BaseModel):
+    """Ответ с уточняющими вопросами"""
+    needs_clarification: bool
+    questions: List[str]
+    summary: Optional[str] = None  # Краткое понимание идеи
+
+
+class DialogMessage(BaseModel):
+    """Сообщение в диалоге"""
+    role: str  # "user" или "assistant"
+    content: str
+
+
+class DialogContext(BaseModel):
+    """Контекст диалога для генерации"""
+    original_idea: str
+    messages: List[DialogMessage]
 
 
 class ImplementationStep(BaseModel):
@@ -79,6 +158,28 @@ class AgentResponse(BaseModel):
 
 
 # Промпты для 4-уровневой цепочки
+PROMPT_CLARIFIER = """Ты — опытный бизнес-аналитик. Твоя задача — понять идею пользователя и задать уточняющие вопросы, если информации недостаточно.
+
+Идея пользователя: {idea}
+
+Проанализируй идею и определи:
+1. Достаточно ли информации для создания ИИ-агента?
+2. Какие детали нужно уточнить?
+
+Если идея ясная и конкретная — верни needs_clarification: false
+Если нужны уточнения — задай 1-3 конкретных вопроса (не больше!)
+
+Важно:
+- Не спрашивай очевидные вещи
+- Вопросы должны быть конкретными и по делу
+- Если идея совсем непонятная — спроси что имеется в виду
+
+Верни ответ в формате JSON:
+{{
+  "needs_clarification": true/false,
+  "questions": ["вопрос 1", "вопрос 2"] // пустой массив если вопросов нет
+}}"""
+
 PROMPT_ANALYST = """Ты — бизнес-аналитик. Проанализируй идею ИИ-агента и определи:
 1. Основную задачу агента
 2. Входные данные (что получает)
@@ -86,6 +187,7 @@ PROMPT_ANALYST = """Ты — бизнес-аналитик. Проанализи
 4. Интеграции (какие сервисы нужны)
 
 Идея: {idea}
+Контекст из диалога: {context}
 
 Верни ответ в формате JSON:
 {{
@@ -195,6 +297,87 @@ def read_root():
     return {"message": "AI Architect API (Groq) — готов к работе!"}
 
 
+@app.post("/api/auth/register", response_model=User)
+async def register(user_data: UserCreate):
+    """Регистрация нового пользователя"""
+    try:
+        user = user_db.create_user(user_data.username, user_data.password)
+        logger.info(f"Зарегистрирован новый пользователь: {user_data.username}")
+        return user
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/auth/login", response_model=Token)
+async def login(user_data: UserLogin):
+    """Вход пользователя"""
+    user = user_db.authenticate(user_data.username, user_data.password)
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Неверное имя пользователя или пароль",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    
+    access_token = create_access_token(data={"sub": user["username"]})
+    logger.info(f"Пользователь {user_data.username} вошёл в систему")
+    return {"access_token": access_token, "token_type": "bearer", "username": user["username"]}
+
+
+@app.get("/api/auth/me", response_model=User)
+async def get_me(current_user: User = Depends(get_current_user)):
+    """Получение текущего пользователя"""
+    return current_user
+
+
+@app.post("/api/clarify", response_model=ClarifyResponse)
+async def clarify_idea(
+    request: ClarifyRequest,
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Анализирует идею и задаёт уточняющие вопросы если нужно
+    """
+    try:
+        logger.info(f"Запрос на уточнение идеи: {request.idea[:100]}...")
+        
+        # Формируем промпт с учётом истории диалога
+        context_str = ""
+        if request.conversation_history:
+            context_str = "История диалога:\n"
+            for msg in request.conversation_history[-6:]:  # Последние 6 сообщений
+                role = "Пользователь" if msg["role"] == "user" else "Ассистент"
+                context_str += f"{role}: {msg['content']}\n"
+        
+        full_idea = f"{request.idea}\n\n{context_str}" if context_str else request.idea
+        
+        clarifier_prompt = PROMPT_CLARIFIER.format(idea=full_idea)
+        result = call_groq(clarifier_prompt)
+        
+        # Добавим краткое резюме идеи
+        summary = f"Идея: {request.idea}"
+        if context_str:
+            summary += f"\nДополнительно: {context_str.strip()}"
+        
+        response_data = {
+            "needs_clarification": result.get("needs_clarification", False),
+            "questions": result.get("questions", []),
+            "summary": summary
+        }
+        
+        logger.info(f"Clarify результат: needs_clarification={response_data['needs_clarification']}, questions={len(response_data['questions'])}")
+        return response_data
+        
+    except Exception as e:
+        logger.error(f"Ошибка clarifier: {e}")
+        # Fallback: возвращаем что вопросов нет
+        return {
+            "needs_clarification": False,
+            "questions": [],
+            "summary": f"Идея: {request.idea}"
+        }
+
+
 @app.get("/api/generate/{session_id}/progress")
 async def get_generation_progress(session_id: str):
     """SSE endpoint для стриминга прогресса генерации"""
@@ -219,21 +402,39 @@ async def get_generation_progress(session_id: str):
 
 
 @app.post("/api/generate", response_model=AgentResponse)
-async def generate_agent(request: AgentRequest):
+async def generate_agent(
+    request: AgentRequest, 
+    current_user: User = Depends(get_current_user),
+    dialog_context: Optional[DialogContext] = None
+):
     """
     Генерирует архитектуру ИИ-агента по описанию идеи
+    dialog_context - опционально, если была сессия уточнений
     """
     import uuid
     session_id = str(uuid.uuid4())
     generation_progress[session_id] = {"stage": "Инициализация...", "step": 0, "total": 4, "completed": False}
     
-    logger.info(f"Получен запрос на генерацию агента. Session: {session_id}. Идея: {request.idea[:100]}...")
+    # Формируем полный контекст идеи
+    if dialog_context:
+        # Собираем всю историю в одну строку
+        context_lines = [f"Original idea: {dialog_context.original_idea}"]
+        for msg in dialog_context.messages:
+            role = "User" if msg.role == "user" else "Assistant"
+            context_lines.append(f"{role}: {msg.content}")
+        full_context = "\n".join(context_lines)
+        idea_text = full_context
+        logger.info(f"Генерация с контекстом диалога. Идея: {idea_text[:100]}...")
+    else:
+        idea_text = request.idea
+        full_context = ""
+        logger.info(f"Получен запрос на генерацию агента. Session: {session_id}. Идея: {idea_text[:100]}...")
     
     try:
         # Шаг 1: Аналитик
         generation_progress[session_id] = {"stage": "Декомпозиция бизнес-задачи...", "step": 1, "total": 4, "completed": False}
         logger.info("Шаг 1/4: Запуск аналитика...")
-        analyst_prompt = PROMPT_ANALYST.format(idea=request.idea)
+        analyst_prompt = PROMPT_ANALYST.format(idea=idea_text, context=full_context)
         analyst_result = call_groq(analyst_prompt)
         logger.info(f"Аналитик завершён. Задача: {analyst_result.get('task', 'N/A')[:50]}...")
 

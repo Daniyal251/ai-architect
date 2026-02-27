@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import type { AgentResponse, GenerationProgress } from '../types.js';
+import type { AgentResponse, GenerationProgress, DialogMessage } from '../types.js';
 
 const API_URL = 'http://localhost:8000';
 
@@ -9,6 +9,7 @@ export function useAgentGenerator() {
   const [error, setError] = useState<string | null>(null);
   const [loadingStage, setLoadingStage] = useState('');
   const [sessionId, setSessionId] = useState<string | null>(null);
+  const [dialogMessages, setDialogMessages] = useState<DialogMessage[]>([]);
 
   const subscribeToProgress = (sessionId: string): Promise<void> => {
     return new Promise((resolve) => {
@@ -31,18 +32,31 @@ export function useAgentGenerator() {
     });
   };
 
-  const generateAgent = async (idea: string) => {
+  const generateAgent = async (idea: string, dialogContext?: DialogMessage[]) => {
     setLoading(true);
     setError(null);
     setResult(null);
     setLoadingStage('Инициализация...');
+    setDialogMessages(dialogContext || []);
+
+    const token = localStorage.getItem('token');
 
     try {
+      const body = dialogContext
+        ? {
+            original_idea: idea,
+            messages: dialogContext,
+          }
+        : { idea };
+
       // Запускаем генерацию и подписываемся на прогресс одновременно
       const generatePromise = fetch(`${API_URL}/api/generate`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ idea }),
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`,
+        },
+        body: JSON.stringify(dialogContext ? body : { idea }),
       });
 
       // Ждём первый ответ для получения session_id
@@ -75,7 +89,8 @@ export function useAgentGenerator() {
     setResult(null);
     setError(null);
     setSessionId(null);
+    setDialogMessages([]);
   };
 
-  return { loading, result, error, loadingStage, generateAgent, reset };
+  return { loading, result, error, loadingStage, dialogMessages, generateAgent, reset };
 }

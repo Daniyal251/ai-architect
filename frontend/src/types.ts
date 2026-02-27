@@ -35,3 +35,42 @@ export interface GenerationProgress {
   completed?: boolean;
   error?: boolean;
 }
+
+// Авторизация
+export interface User {
+  username: string;
+  disabled?: boolean;
+}
+
+export interface LoginRequest {
+  username: string;
+  password: string;
+}
+
+export interface RegisterRequest {
+  username: string;
+  password: string;
+}
+
+export interface AuthToken {
+  access_token: string;
+  token_type: string;
+  username: string;
+}
+
+// Диалог для уточнения
+export interface DialogMessage {
+  role: 'user' | 'assistant';
+  content: string;
+}
+
+export interface ClarifyRequest {
+  idea: string;
+  conversation_history?: DialogMessage[];
+}
+
+export interface ClarifyResponse {
+  needs_clarification: boolean;
+  questions: string[];
+  summary: string;
+}
