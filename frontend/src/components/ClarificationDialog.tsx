@@ -9,7 +9,7 @@ interface Props {
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
-export function ClarificationDialog({ idea, onComplete, onSkip }: Props) {
+export function ClarificationDialog({ idea, onComplete }: Props) {
   const [messages, setMessages] = useState<DialogMessage[]>([]);
   const [questions, setQuestions] = useState<string[]>([]);
   const [currentAnswer, setCurrentAnswer] = useState('');

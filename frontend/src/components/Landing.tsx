@@ -48,12 +48,6 @@ const TEMPLATES = [
   }
 ];
 
-const QUICK_START = [
-  "🚀 Создать агента за 2 минуты",
-  "💡 Идеи для автоматизации",
-  "📋 Готовые шаблоны",
-];
-
 export function Landing({ onSubmit, loading }: LandingProps) {
   const [idea, setIdea] = useState('');
   const [activeCategory, setActiveCategory] = useState<string | null>(null);
