@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Depends, status
+from fastapi import FastAPI, HTTPException, Depends, status, Body
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, RedirectResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -78,7 +78,23 @@ _provider_index = 0  # Для round-robin
 def _get_active_providers() -> list:
     """Активные провайдеры из БД (приоритет) или из .env"""
     db_providers = user_db.get_ai_providers()
-    active = [p for p in db_providers if p.get("enabled") and p.get("key")]
+    active = []
+    for p in db_providers:
+        if not p.get("enabled"):
+            continue
+        # Поддержка обоих форматов: api_key (новый из ai_providers.py) и key (старый из .env)
+        key = p.get("api_key") or p.get("key", "")
+        if not key:
+            continue
+        # Нормализуем к формату call_groq: key + model (строка)
+        models_list = p.get("models") or []
+        model = p.get("model") or (models_list[0].get("id") if models_list else "llama-3.3-70b-versatile")
+        active.append({
+            "name": p.get("name", "Unknown"),
+            "key": key,
+            "base_url": p.get("base_url", "https://api.groq.com/openai/v1"),
+            "model": model,
+        })
     return active if active else [p for p in _ENV_PROVIDERS if p.get("key")]
 
 
@@ -484,40 +500,47 @@ async def get_me(current_user: User = Depends(get_current_user)):
 
 # ─── OAuth 2.0 (Google / GitHub / Yandex) ────────────────────────────────────
 
-_OAUTH_CONFIGS: Dict[str, Dict[str, str]] = {
+_OAUTH_STATIC: Dict[str, Dict[str, str]] = {
     "google": {
         "auth_url":     "https://accounts.google.com/o/oauth2/v2/auth",
         "token_url":    "https://oauth2.googleapis.com/token",
         "userinfo_url": "https://www.googleapis.com/oauth2/v2/userinfo",
         "scope":        "openid email profile",
-        "client_id":    os.getenv("GOOGLE_CLIENT_ID", ""),
-        "client_secret": os.getenv("GOOGLE_CLIENT_SECRET", ""),
     },
     "github": {
         "auth_url":     "https://github.com/login/oauth/authorize",
         "token_url":    "https://github.com/login/oauth/access_token",
         "userinfo_url": "https://api.github.com/user",
         "scope":        "user:email",
-        "client_id":    os.getenv("GITHUB_CLIENT_ID", ""),
-        "client_secret": os.getenv("GITHUB_CLIENT_SECRET", ""),
     },
     "yandex": {
         "auth_url":     "https://oauth.yandex.ru/authorize",
         "token_url":    "https://oauth.yandex.ru/token",
         "userinfo_url": "https://login.yandex.ru/info",
         "scope":        "login:email login:info",
-        "client_id":    os.getenv("YANDEX_CLIENT_ID", ""),
-        "client_secret": os.getenv("YANDEX_CLIENT_SECRET", ""),
     },
 }
 
 _oauth_states: Dict[str, str] = {}  # state → provider (in-memory, достаточно для dev)
 
 
+def _get_oauth_config(provider: str) -> Optional[Dict[str, str]]:
+    """Читает OAuth конфиг из DB (приоритет) или из env vars — каждый раз свежо"""
+    static = _OAUTH_STATIC.get(provider)
+    if not static:
+        return None
+    # Читаем ключи из DB, fallback → env
+    client_id = (user_db.get_setting(f"{provider}_client_id")
+                 or os.getenv(f"{provider.upper()}_CLIENT_ID", ""))
+    client_secret = (user_db.get_setting(f"{provider}_client_secret")
+                     or os.getenv(f"{provider.upper()}_CLIENT_SECRET", ""))
+    return {**static, "client_id": client_id, "client_secret": client_secret}
+
+
 @app.get("/api/auth/oauth/{provider}")
 async def oauth_redirect(provider: str):
     """Редирект на страницу авторизации провайдера"""
-    cfg = _OAUTH_CONFIGS.get(provider)
+    cfg = _get_oauth_config(provider)
     if not cfg:
         raise HTTPException(status_code=400, detail=f"Неизвестный провайдер: {provider}")
     if not cfg["client_id"]:
@@ -526,7 +549,7 @@ async def oauth_redirect(provider: str):
     state = secrets.token_urlsafe(16)
     _oauth_states[state] = provider
 
-    base_url = os.getenv("BACKEND_URL", "https://aiarchi.ru")
+    base_url = user_db.get_setting("backend_url") or os.getenv("BACKEND_URL", "https://aiarchi.ru")
     params = {
         "client_id":     cfg["client_id"],
         "redirect_uri":  f"{base_url}/api/auth/oauth/{provider}/callback",
@@ -549,11 +572,11 @@ async def oauth_callback(provider: str, code: str = "", state: str = "", error: 
     if error or not code:
         return RedirectResponse(f"{frontend_url}/auth?error=oauth_denied")
 
-    cfg = _OAUTH_CONFIGS.get(provider)
+    cfg = _get_oauth_config(provider)
     if not cfg:
         return RedirectResponse(f"{frontend_url}/auth?error=unknown_provider")
 
-    base_url = os.getenv("BACKEND_URL", "https://aiarchi.ru")
+    base_url = user_db.get_setting("backend_url") or os.getenv("BACKEND_URL", "https://aiarchi.ru")
 
     try:
         async with httpx.AsyncClient(timeout=15) as client:
@@ -1286,22 +1309,34 @@ async def admin_delete_user(
 async def get_providers(admin: User = Depends(_require_admin)):
     """Получить всех AI провайдеров"""
     from app.ai_providers import ai_provider_manager
-    
-    # Получаем провайдеров из БД или дефолтных
+
+    # Получаем провайдеров из БД
     db_providers = user_db.get_ai_providers()
     if db_providers:
+        # Убеждаемся что у каждого есть id
+        for i, p in enumerate(db_providers):
+            if "id" not in p:
+                p["id"] = p.get("name", f"provider_{i}").lower().replace(" ", "_").replace("(", "").replace(")", "")
         return db_providers
-    
-    # Возвращаем дефолтных провайдеров
-    return list(ai_provider_manager.default_providers.values())
+
+    # Возвращаем дефолтных провайдеров с id
+    providers_list = []
+    for k, v in ai_provider_manager.default_providers.items():
+        p = dict(v)
+        p["id"] = k
+        providers_list.append(p)
+    return providers_list
 
 
 @app.post("/api/admin/providers")
 async def save_providers(
-    providers: list,
+    request: Request,
     admin: User = Depends(_require_admin),
 ):
-    """Сохранить AI провайдеров"""
+    """Сохранить AI провайдеров — принимает JSON-массив или {"providers": [...]}"""
+    body = await request.json()
+    # Поддерживаем оба формата: голый массив [...] и обёрнутый {"providers": [...]}
+    providers = body if isinstance(body, list) else body.get("providers", [])
     user_db.save_ai_providers(providers)
     logger.info(f"Admin {admin.username} → сохранено {len(providers)} провайдеров")
     return {"success": True}
@@ -1329,8 +1364,13 @@ async def get_provider_stats(admin: User = Depends(_require_admin)):
 SETTINGS_KEYS = [
     "yookassa_shop_id", "yookassa_secret_key",
     "smtp_host", "smtp_port", "smtp_user", "smtp_password", "smtp_from",
+    "google_client_id", "google_client_secret",
+    "github_client_id", "github_client_secret",
+    "yandex_client_id", "yandex_client_secret",
+    "sms_api_key",
+    "backend_url",
 ]
-SENSITIVE_KEYS = {"yookassa_secret_key", "smtp_password"}
+SENSITIVE_KEYS = {"yookassa_secret_key", "smtp_password", "google_client_secret", "github_client_secret", "yandex_client_secret", "sms_api_key"}
 
 
 @app.get("/api/admin/settings")
