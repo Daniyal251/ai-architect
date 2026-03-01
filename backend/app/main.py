@@ -382,14 +382,15 @@ PROMPT_CHAT_WITH_AGENT = """Ты — {agent_name}, {agent_role}.
 {agent_system_prompt}
 
 ---
-ПРАВИЛА ОБЩЕНИЯ (платформа для начинающих предпринимателей):
-- Если это первое сообщение — СНАЧАЛА задай уточняющий вопрос:
-  "Вы уже работали с этой темой? Вы один или с командой? Что уже пробовали?"
+{first_msg_block}
+ПРАВИЛА ОБЩЕНИЯ (всегда):
 - Давай инструкции пошагово, от простого к сложному (максимум 5-6 пунктов)
 - НЕ давай код и технические детали без прямого запроса
 - Каждый шаг = конкретное действие (что нажать, куда пойти, что заполнить)
 - Если пользователь не понимает — объясни проще, с аналогиями из жизни
 - Задавай уточняющие вопросы если запрос неясен
+- Если пользователь сказал что работает ОДИН — убери из плана всё что требует команды, скорректируй бюджет
+- Если пользователь назвал бюджет — адаптируй рекомендации под этот бюджет
 
 Текущий шаг проекта: {current_step}
 
@@ -403,6 +404,18 @@ PROMPT_CHAT_WITH_AGENT = """Ты — {agent_name}, {agent_role}.
   "response": "ответ с конкретными пошаговыми инструкциями",
   "suggested_actions": ["Следующий шаг 1", "Следующий шаг 2", "Следующий шаг 3"]
 }}"""
+
+_FIRST_MSG_BLOCK = """⚠️ СТОП — ЭТО ПЕРВОЕ СООБЩЕНИЕ ПОЛЬЗОВАТЕЛЯ.
+ТВОЙ ОТВЕТ ДОЛЖЕН СОДЕРЖАТЬ ТОЛЬКО:
+1. Одну строку приветствия
+2. Ровно 3 вопроса (без вариантов ответа, просто вопросы):
+   • "Вы уже работали с этой темой? Что пробовали?"
+   • "Вы будете работать один или есть партнёр/команда?"
+   • "Какой примерный бюджет готовы вложить на старт?"
+❌ ЗАПРЕЩЕНО давать: инструкции, шаги, регистрацию, ссылки, советы, списки действий.
+Просто поздоровайся и задай 3 вопроса. Жди ответов.
+---
+"""
 
 
 def call_groq(prompt: str, max_retries: int = 3, fallback_result: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -1225,6 +1238,10 @@ async def chat_with_agent(
     if not conversation_history_str:
         conversation_history_str = "Нет предыдущих сообщений"
 
+    # Определяем — первое ли это сообщение пользователя
+    is_first_message = not any(m.role == "user" for m in history)
+    first_msg_block = _FIRST_MSG_BLOCK if is_first_message else ""
+
     # Используем agent's system_prompt для контекстного ответа
     agent_system_prompt = dashboard_data.get("system_prompt", "")
     if agent_system_prompt:
@@ -1232,6 +1249,7 @@ async def chat_with_agent(
             agent_name=dashboard_data["agent_profile"]["name"],
             agent_role=dashboard_data["agent_profile"]["role"],
             agent_system_prompt=agent_system_prompt,
+            first_msg_block=first_msg_block,
             current_step=request.current_step or "не указан",
             conversation_history=conversation_history_str,
             message=request.message,

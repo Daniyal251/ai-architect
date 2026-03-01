@@ -60,11 +60,17 @@ export function ProjectMetrics({ metrics, onHelpWithStep }: Props) {
           {metrics.key_metrics.map((metric, idx) => (
             <div
               key={idx}
-              className={`rounded-xl p-4 text-center ${
+              onClick={() => onHelpWithStep && onHelpWithStep(
+                `Объясни мне детально: «${metric.label}: ${metric.value} ${metric.unit}» — из чего это складывается? Я новичок, расскажи понятно с примерами. Как можно снизить эту цифру?`
+              )}
+              className={`rounded-xl p-4 text-center transition-all duration-200 ${
+                onHelpWithStep ? 'cursor-pointer hover:scale-105 hover:shadow-lg' : ''
+              } ${
                 idx % 2 === 0
-                  ? 'bg-cyan-500/10 border border-cyan-500/30'
-                  : 'bg-purple-500/10 border border-purple-500/30'
+                  ? 'bg-cyan-500/10 border border-cyan-500/30 hover:border-cyan-400/60'
+                  : 'bg-purple-500/10 border border-purple-500/30 hover:border-purple-400/60'
               }`}
+              title={onHelpWithStep ? `Нажми чтобы узнать из чего складывается «${metric.label}»` : undefined}
             >
               <p className={`text-2xl font-bold ${idx % 2 === 0 ? 'text-cyan-400' : 'text-purple-400'}`}>
                 {metric.value}
@@ -73,6 +79,9 @@ export function ProjectMetrics({ metrics, onHelpWithStep }: Props) {
                 {metric.unit}
               </p>
               <p className="text-xs text-gray-400 mt-1">{metric.label}</p>
+              {onHelpWithStep && (
+                <p className="text-xs text-gray-600 mt-1 italic">нажми →</p>
+              )}
             </div>
           ))}
         </div>
@@ -89,7 +98,7 @@ export function ProjectMetrics({ metrics, onHelpWithStep }: Props) {
                 <span className="text-sm font-medium text-gray-200">{group.category}</span>
                 {onHelpWithStep && (
                   <button
-                    onClick={() => onHelpWithStep(`Помоги разобраться с разделом "${group.category}": ${group.items.join(', ')}`)}
+                    onClick={() => onHelpWithStep(`Помоги разобраться с разделом "${group.category}": ${group.items.join(', ')}. Где найти, сколько стоит, как выбрать для новичка?`)}
                     className="ml-auto text-xs px-2 py-1 bg-cyan-500/20 text-cyan-400
                                hover:bg-cyan-500/30 rounded-lg transition"
                   >
@@ -99,9 +108,19 @@ export function ProjectMetrics({ metrics, onHelpWithStep }: Props) {
               </div>
               <ul className="space-y-1">
                 {group.items.map((item, itemIdx) => (
-                  <li key={itemIdx} className="text-sm text-gray-400 flex items-start gap-2">
-                    <span className="text-cyan-500 mt-0.5">•</span>
+                  <li
+                    key={itemIdx}
+                    onClick={() => onHelpWithStep && onHelpWithStep(
+                      `Объясни мне подробно: «${item}» из раздела «${group.category}» — что это такое, где это взять/найти, сколько стоит, как выбрать? Я новичок.`
+                    )}
+                    className={`text-sm text-gray-400 flex items-start gap-2 rounded-lg px-2 py-1 -mx-2 transition-all
+                                ${onHelpWithStep ? 'cursor-pointer hover:bg-white/10 hover:text-gray-200' : ''}`}
+                  >
+                    <span className="text-cyan-500 mt-0.5 flex-shrink-0">•</span>
                     <span>{item}</span>
+                    {onHelpWithStep && (
+                      <span className="ml-auto text-cyan-600/50 text-xs italic flex-shrink-0">→</span>
+                    )}
                   </li>
                 ))}
               </ul>
