@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
+import { useAuth } from '../contexts/AuthContext';
 import type { AgentResponse, DialogMessage, ImplementationStep } from '../types.js';
 
 interface Props {
@@ -6,13 +7,14 @@ interface Props {
   onClose: () => void;
   dashboardContext: AgentResponse;
   agentId?: string;
-  initialStep?: ImplementationStep | null; // шаг, с которого открыт чат
-  initialMessage?: string | null;          // готовое сообщение для отправки
+  initialStep?: ImplementationStep | null;
+  initialMessage?: string | null;
 }
 
 const API_URL = '';
 
 export function ChatCopilot({ isOpen, onClose, dashboardContext, agentId, initialStep, initialMessage }: Props) {
+  const { token } = useAuth();
   const [messages, setMessages] = useState<DialogMessage[]>([]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
@@ -20,8 +22,6 @@ export function ChatCopilot({ isOpen, onClose, dashboardContext, agentId, initia
   const [currentStepContext, setCurrentStepContext] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const didAutoSend = useRef(false);
-
-  const token = localStorage.getItem('token');
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });

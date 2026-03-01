@@ -8,7 +8,7 @@ const API_URL = '';
 
 export function AgentPage() {
   const { id } = useParams<{ id: string }>();
-  const { token, username, logout } = useAuth();
+  const { token, username } = useAuth();
   const navigate = useNavigate();
   const [data, setData] = useState<AgentResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -45,20 +45,20 @@ export function AgentPage() {
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-gradient-to-br from-gray-900 via-purple-900 to-gray-900 flex items-center justify-center">
-        <p className="text-white text-xl animate-pulse">Загружаем агента...</p>
+      <div className="min-h-full flex items-center justify-center py-20">
+        <p className="text-gray-400 animate-pulse">Загружаем агента...</p>
       </div>
     );
   }
 
   if (error || !data) {
     return (
-      <div className="min-h-screen bg-gradient-to-br from-gray-900 via-purple-900 to-gray-900 flex items-center justify-center">
+      <div className="min-h-full flex items-center justify-center py-20">
         <div className="text-center">
-          <p className="text-red-400 text-xl mb-6">{error || 'Агент не найден'}</p>
+          <p className="text-red-400 mb-4">{error || 'Агент не найден'}</p>
           <button
             onClick={() => navigate('/app/agents')}
-            className="px-6 py-3 bg-gradient-to-r from-cyan-500 to-purple-500 rounded-xl text-white"
+            className="px-5 py-2.5 bg-gradient-to-r from-cyan-500 to-purple-500 rounded-xl text-sm text-white"
           >
             К списку агентов
           </button>
@@ -73,7 +73,6 @@ export function AgentPage() {
       agentId={id}
       onReset={() => navigate('/app/new')}
       username={username}
-      onLogout={logout}
     />
   );
 }

@@ -1,11 +1,18 @@
-import { useState } from 'react';
+import { useState, useRef, useEffect } from 'react';
+import { useAuth } from '../contexts/AuthContext';
 import type { AgentResponse, GenerationProgress, DialogMessage } from '../types.js';
 
 const API_URL = '';
+
 /** Подписывается на SSE и резолвит Promise когда приходит финальный результат */
-function waitForResult(sessionId: string, onStage: (stage: string) => void): Promise<AgentResponse> {
+function waitForResult(
+  sessionId: string,
+  onStage: (stage: string) => void,
+  esRef: React.MutableRefObject<EventSource | null>,
+): Promise<AgentResponse> {
   return new Promise((resolve, reject) => {
     const eventSource = new EventSource(`${API_URL}/api/generate/${sessionId}/progress`);
+    esRef.current = eventSource;
 
     eventSource.onmessage = (event) => {
       const data: GenerationProgress & { result?: AgentResponse } = JSON.parse(event.data);
@@ -14,33 +21,37 @@ function waitForResult(sessionId: string, onStage: (stage: string) => void): Pro
 
       if (data.error) {
         eventSource.close();
+        esRef.current = null;
         reject(new Error(data.stage || 'Ошибка генерации'));
         return;
       }
 
       if (data.completed && data.result) {
         eventSource.close();
+        esRef.current = null;
         resolve(data.result);
       }
     };
 
     eventSource.onerror = () => {
       eventSource.close();
+      esRef.current = null;
       reject(new Error('Потеряно соединение с сервером'));
     };
   });
 }
 
 export function useAgentGenerator() {
+  const { token } = useAuth();
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<AgentResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loadingStage, setLoadingStage] = useState('');
+  const esRef = useRef<EventSource | null>(null);
 
-  /**
-   * Генерирует агента, автоматически сохраняет в БД.
-   * Возвращает agentId при успехе, null при ошибке.
-   */
+  // Закрываем SSE при размонтировании компонента
+  useEffect(() => () => { esRef.current?.close(); }, []);
+
   const generateAgent = async (
     idea: string,
     dialogContext?: DialogMessage[],
@@ -49,8 +60,6 @@ export function useAgentGenerator() {
     setError(null);
     setResult(null);
     setLoadingStage('Инициализация...');
-
-    const token = localStorage.getItem('token');
 
     try {
       // idea всегда включаем — Pydantic требует его как обязательное поле
@@ -82,7 +91,7 @@ export function useAgentGenerator() {
       const { session_id } = await startRes.json();
 
       // 2. Подписываемся на SSE — получаем прогресс в реальном времени + результат
-      const data = await waitForResult(session_id, setLoadingStage);
+      const data = await waitForResult(session_id, setLoadingStage, esRef);
 
       setResult(data);
 
@@ -101,13 +110,12 @@ export function useAgentGenerator() {
           const { id } = await saveRes.json();
           return id;
         }
-      } catch (saveErr) {
-        console.error('Автосохранение не удалось:', saveErr);
+      } catch {
+        // Автосохранение не критично
       }
 
       return null;
     } catch (err) {
-      console.error('Generation error:', err);
       setError(
         err instanceof Error ? err.message : 'Не удалось сгенерировать агента. Попробуйте снова.',
       );

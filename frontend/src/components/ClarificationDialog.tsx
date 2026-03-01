@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
 import type { DialogMessage, ClarifyResponse } from '../types.js';
+import { useAuth } from '../contexts/AuthContext';
 
 interface Props {
   idea: string;
@@ -10,14 +11,13 @@ interface Props {
 const API_URL = '';
 
 export function ClarificationDialog({ idea, onComplete }: Props) {
+  const { token } = useAuth();
   const [messages, setMessages] = useState<DialogMessage[]>([]);
   const [questions, setQuestions] = useState<string[]>([]);
   const [currentAnswer, setCurrentAnswer] = useState('');
   const [loading, setLoading] = useState(false);
   const [step, setStep] = useState<'initial' | 'dialog' | 'complete'>('initial');
   const messagesEndRef = useRef<HTMLDivElement>(null);
-
-  const token = localStorage.getItem('token');
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -42,8 +42,6 @@ export function ClarificationDialog({ idea, onComplete }: Props) {
         });
 
         const data: ClarifyResponse = await response.json();
-        console.log('Clarify response:', data);
-
         if (data.needs_clarification && data.questions.length > 0) {
           setQuestions(data.questions);
           setStep('dialog');
@@ -54,14 +52,12 @@ export function ClarificationDialog({ idea, onComplete }: Props) {
           ]);
         } else {
           // Вопросы не нужны, сразу переходим к генерации
-          console.log('No clarification needed, generating...');
           onComplete([
             { role: 'user', content: idea },
             { role: 'assistant', content: data.summary || idea }
           ]);
         }
-      } catch (err) {
-        console.error('Clarify error:', err);
+      } catch {
         // При ошибке сразу переходим к генерации
         onComplete([{ role: 'user', content: idea }]);
       } finally {
@@ -78,17 +74,13 @@ export function ClarificationDialog({ idea, onComplete }: Props) {
       { role: 'assistant', content: question },
       { role: 'user', content: currentAnswer },
     ];
-    console.log('Answer submitted, new messages:', newMessages);
     setMessages(newMessages);
     setCurrentAnswer('');
 
     // Удаляем отвеченный вопрос
     const remainingQuestions = questions.filter((_, i) => i !== index);
-    console.log('Remaining questions:', remainingQuestions);
-
     if (remainingQuestions.length === 0) {
       setStep('complete');
-      console.log('All questions answered, calling onComplete...');
       // Передаем все сообщения включая оригинальную идею
       setTimeout(() => onComplete(newMessages), 500);
     } else {

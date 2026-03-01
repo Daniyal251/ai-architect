@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useState, useEffect } from 'react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 
 const API_URL = '';
@@ -58,34 +58,68 @@ const PLANS = [
 
 export function PricingPage() {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const { isAuthenticated, plan, token, refreshUsage } = useAuth();
   const [loading, setLoading] = useState<string | null>(null);
   const [success, setSuccess] = useState('');
+  const [error, setError] = useState('');
+  const [paymentEnabled, setPaymentEnabled] = useState(false);
+
+  // Проверяем, настроена ли платёжная система
+  useEffect(() => {
+    if (!token) return;
+    fetch(`${API_URL}/api/payments/status`, { headers: { Authorization: `Bearer ${token}` } })
+      .then((r) => r.json())
+      .then((d) => setPaymentEnabled(!!d.enabled))
+      .catch(() => setPaymentEnabled(false));
+  }, [token]);
+
+  // Обработка возврата от ЮKassa
+  useEffect(() => {
+    const status = searchParams.get('status');
+    const paidPlan = searchParams.get('plan');
+    if (status === 'success' && paidPlan) {
+      refreshUsage();
+      setSuccess(`Тариф ${paidPlan.charAt(0).toUpperCase() + paidPlan.slice(1)} активирован! Спасибо за оплату.`);
+    }
+  }, [searchParams, refreshUsage]);
 
   const handleUpgrade = async (planId: string) => {
-    if (!isAuthenticated) {
-      navigate('/auth');
-      return;
-    }
+    if (!isAuthenticated) { navigate('/auth'); return; }
     if (planId === 'free' || planId === plan) return;
 
     setLoading(planId);
+    setError('');
     try {
-      const res = await fetch(`${API_URL}/api/upgrade`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({ plan: planId }),
-      });
-      if (res.ok) {
-        await refreshUsage();
-        setSuccess(`Тариф ${planId.charAt(0).toUpperCase() + planId.slice(1)} активирован!`);
-        setTimeout(() => { setSuccess(''); navigate('/app/new'); }, 2000);
+      if (paymentEnabled) {
+        // Реальная оплата через ЮKassa
+        const res = await fetch(`${API_URL}/api/payments/create`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ plan: planId }),
+        });
+        if (res.ok) {
+          const data = await res.json();
+          window.location.href = data.confirmation_url;
+        } else {
+          const err = await res.json();
+          setError(err.detail || 'Ошибка создания платежа');
+        }
+      } else {
+        // Демо-режим: прямой апгрейд без оплаты
+        const res = await fetch(`${API_URL}/api/upgrade`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ plan: planId }),
+        });
+        if (res.ok) {
+          await refreshUsage();
+          setSuccess(`Тариф ${planId.charAt(0).toUpperCase() + planId.slice(1)} активирован!`);
+          setTimeout(() => { setSuccess(''); navigate('/app/new'); }, 2000);
+        }
       }
     } catch {
-      // ignore
+      setError('Ошибка соединения');
     } finally {
       setLoading(null);
     }
@@ -139,6 +173,11 @@ export function PricingPage() {
             ✅ {success}
           </div>
         )}
+        {error && (
+          <div className="mb-8 p-4 bg-red-500/20 border border-red-500/30 rounded-xl text-red-400 text-center">
+            ❌ {error}
+          </div>
+        )}
 
         {/* Cards */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
@@ -187,7 +226,7 @@ export function PricingPage() {
                 `}
               >
                 {loading === p.id
-                  ? 'Подключаем...'
+                  ? 'Переход к оплате...'
                   : plan === p.id
                     ? '✓ Текущий тариф'
                     : p.id === 'free'
@@ -201,7 +240,9 @@ export function PricingPage() {
         {/* FAQ */}
         <div className="mt-16 text-center">
           <p className="text-gray-500 text-sm">
-            Оплата через Stripe · Отмена в любой момент · Лимиты обновляются 1-го числа каждого месяца
+            {paymentEnabled
+              ? 'Оплата через ЮKassa · Безопасные платежи · Лимиты обновляются сразу после оплаты'
+              : 'Тестовый режим · Платёжная система подключается · Лимиты обновляются 1-го числа каждого месяца'}
           </p>
           <p className="text-gray-600 text-xs mt-2">
             Вопросы? Напишите нам — ответим в течение часа.

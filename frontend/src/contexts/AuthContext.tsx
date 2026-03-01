@@ -5,6 +5,7 @@ const API_URL = '';
 
 interface AuthContextType {
   isAuthenticated: boolean;
+  isInitializing: boolean;
   username: string;
   plan: string;
   token: string | null;
@@ -18,6 +19,7 @@ const AuthContext = createContext<AuthContextType | null>(null);
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [isInitializing, setIsInitializing] = useState(true);
   const [username, setUsername] = useState('');
   const [plan, setPlan] = useState('free');
   const [token, setToken] = useState<string | null>(null);
@@ -49,6 +51,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setPlan(savedPlan);
       fetchUsage(savedToken);
     }
+    setIsInitializing(false);
   }, [fetchUsage]);
 
   const login = (newToken: string, newUsername: string, newPlan = 'free') => {
@@ -78,7 +81,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   };
 
   return (
-    <AuthContext.Provider value={{ isAuthenticated, username, plan, token, usage, login, logout, refreshUsage }}>
+    <AuthContext.Provider value={{ isAuthenticated, isInitializing, username, plan, token, usage, login, logout, refreshUsage }}>
       {children}
     </AuthContext.Provider>
   );

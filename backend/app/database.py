@@ -1,10 +1,11 @@
 """
 База данных (SQLAlchemy + MySQL/SQLite)
 Автоматически определяет тип БД из DATABASE_URL
+Поддержка AI провайдеров с переключением
 """
 import os
 from typing import Optional, List, Dict, Any
-from sqlalchemy import create_engine, Column, String, Text, DateTime, Boolean, func, text
+from sqlalchemy import create_engine, Column, String, Text, DateTime, Boolean, func, text, Integer
 from sqlalchemy.orm import declarative_base, sessionmaker
 from datetime import datetime
 import json
@@ -35,12 +36,14 @@ class UserModel(Base):
     __tablename__ = "users"
 
     username        = Column(String, primary_key=True, index=True)
-    hashed_password = Column(String, nullable=False)
+    hashed_password = Column(String, nullable=True)   # nullable для OAuth-юзеров без пароля
     email           = Column(String, nullable=True)
-    plan            = Column(String, default="free")   # free | starter | pro | admin
-    plan_expires_at = Column(DateTime, nullable=True)  # None = бессрочно
+    plan            = Column(String, default="free")
+    plan_expires_at = Column(DateTime, nullable=True)
     disabled        = Column(Boolean, default=False)
     created_at      = Column(DateTime, default=datetime.utcnow)
+    oauth_provider  = Column(String, nullable=True)   # google | github | yandex | phone
+    oauth_id        = Column(String, nullable=True)   # ID у провайдера или номер телефона
 
 
 class AgentModel(Base):
@@ -52,26 +55,53 @@ class AgentModel(Base):
     role          = Column(String)
     avatar        = Column(String)
     idea          = Column(Text)
-    full_response = Column(Text)              # JSON
-    chat_history  = Column(Text, default="[]")  # JSON array
+    full_response = Column(Text)
+    chat_history  = Column(Text, default="[]")
     created_at    = Column(DateTime, default=datetime.utcnow)
 
 
 class UsageEventModel(Base):
-    """Каждая генерация = одна запись"""
     __tablename__ = "usage_events"
 
     id         = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
     username   = Column(String, nullable=False, index=True)
-    event_type = Column(String, default="generation")  # generation | chat
+    event_type = Column(String, default="generation")
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
-# ── Лимиты по тарифам ──────────────────────────────────────────────────────────
+class ConfigModel(Base):
+    """Конфигурация приложения (AI провайдеры, настройки)"""
+    __tablename__ = "config"
+
+    key   = Column(String, primary_key=True)
+    value = Column(Text, nullable=False)
+
+
+class ProviderStatModel(Base):
+    """Статистика использования AI провайдеров"""
+    __tablename__ = "provider_stats"
+
+    provider_id = Column(String, primary_key=True)
+    requests    = Column(Integer, default=0)
+    errors      = Column(Integer, default=0)
+    updated_at  = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class OtpModel(Base):
+    """Одноразовые коды для входа по телефону"""
+    __tablename__ = "otp_codes"
+
+    phone      = Column(String, primary_key=True)
+    code       = Column(String, nullable=False)
+    expires_at = Column(DateTime, nullable=False)
+    attempts   = Column(Integer, default=0)
+
+
+# Лимиты по тарифам
 PLAN_LIMITS = {
     "free":    {"generations_per_month": 3,  "max_agents": 5},
     "starter": {"generations_per_month": 25, "max_agents": 30},
-    "pro":     {"generations_per_month": -1, "max_agents": -1},   # -1 = безлимит
+    "pro":     {"generations_per_month": -1, "max_agents": -1},
     "admin":   {"generations_per_month": -1, "max_agents": -1},
 }
 
@@ -84,18 +114,23 @@ PLAN_NAMES = {
 
 
 def _migrate_existing_db():
-    """Добавляет новые колонки в существующие таблицы (безопасно)"""
+    """Добавляет новые колонки и таблицы"""
     with engine.connect() as conn:
         for ddl in [
             "ALTER TABLE users ADD COLUMN email TEXT",
             "ALTER TABLE users ADD COLUMN plan TEXT DEFAULT 'free'",
             "ALTER TABLE users ADD COLUMN plan_expires_at DATETIME",
+            "ALTER TABLE users ADD COLUMN oauth_provider TEXT",
+            "ALTER TABLE users ADD COLUMN oauth_id TEXT",
+            "CREATE TABLE IF NOT EXISTS config (key VARCHAR(255) PRIMARY KEY, value TEXT NOT NULL)",
+            "CREATE TABLE IF NOT EXISTS provider_stats (provider_id VARCHAR(255) PRIMARY KEY, requests INT DEFAULT 0, errors INT DEFAULT 0, updated_at DATETIME)",
+            "CREATE TABLE IF NOT EXISTS otp_codes (phone VARCHAR(20) PRIMARY KEY, code VARCHAR(10) NOT NULL, expires_at DATETIME NOT NULL, attempts INT DEFAULT 0)",
         ]:
             try:
                 conn.execute(text(ddl))
                 conn.commit()
             except Exception:
-                pass  # Колонка уже существует
+                pass
 
 
 Base.metadata.create_all(bind=engine)
@@ -122,7 +157,7 @@ class Database:
 
     # ── Users ──────────────────────────────────────────────────────────────────
 
-    def create_user(self, username: str, password: str, email: Optional[str] = None) -> Dict[str, Any]:
+    def create_user(self, username: str, password: str, email: str | None = None) -> dict:
         db = SessionLocal()
         try:
             if db.query(UserModel).filter(UserModel.username == username).first():
@@ -344,6 +379,224 @@ class Database:
                 db.commit()
         finally:
             db.close()
+
+    # ── AI Providers ───────────────────────────────────────────────────────────
+
+    def get_ai_providers(self) -> list:
+        """Получить AI провайдеров из БД"""
+        db = SessionLocal()
+        try:
+            config = db.query(ConfigModel).filter(ConfigModel.key == "ai_providers").first()
+            if config:
+                return json.loads(config.value)
+            return []
+        finally:
+            db.close()
+
+    def save_ai_providers(self, providers: list):
+        """Сохранить AI провайдеров"""
+        db = SessionLocal()
+        try:
+            config = db.query(ConfigModel).filter(ConfigModel.key == "ai_providers").first()
+            if config:
+                config.value = json.dumps(providers, ensure_ascii=False)
+            else:
+                db.add(ConfigModel(key="ai_providers", value=json.dumps(providers, ensure_ascii=False)))
+            db.commit()
+        finally:
+            db.close()
+
+    def get_provider_stats(self) -> dict:
+        """Получить статистику провайдеров"""
+        db = SessionLocal()
+        try:
+            stats = db.query(ProviderStatModel).all()
+            return {
+                stat.provider_id: {
+                    "requests": stat.requests,
+                    "errors": stat.errors,
+                    "updated_at": stat.updated_at.isoformat() if stat.updated_at else None,
+                }
+                for stat in stats
+            }
+        finally:
+            db.close()
+
+    def record_provider_request(self, provider_id: str, success: bool):
+        """Записать запрос к провайдеру"""
+        db = SessionLocal()
+        try:
+            stat = db.query(ProviderStatModel).filter(
+                ProviderStatModel.provider_id == provider_id
+            ).first()
+
+            if not stat:
+                stat = ProviderStatModel(provider_id=provider_id, requests=0, errors=0)
+                db.add(stat)
+
+            stat.requests += 1
+            if not success:
+                stat.errors += 1
+
+            db.commit()
+        finally:
+            db.close()
+
+    # ── Profile ────────────────────────────────────────────────────────────────
+
+    def update_user_profile(self, username: str, email: Optional[str] = None, new_password: Optional[str] = None):
+        """Обновить email и/или пароль пользователя"""
+        db = SessionLocal()
+        try:
+            user = db.query(UserModel).filter(UserModel.username == username).first()
+            if user:
+                if email is not None:
+                    user.email = email
+                if new_password is not None:
+                    user.hashed_password = get_password_hash(new_password)
+                db.commit()
+        finally:
+            db.close()
+
+    # ── Settings (key-value в config) ─────────────────────────────────────────
+
+    def get_setting(self, key: str, default: Optional[str] = None) -> Optional[str]:
+        """Получить одно значение настройки"""
+        db = SessionLocal()
+        try:
+            row = db.query(ConfigModel).filter(ConfigModel.key == key).first()
+            return row.value if row else default
+        finally:
+            db.close()
+
+    def set_setting(self, key: str, value: str):
+        """Установить одно значение настройки"""
+        db = SessionLocal()
+        try:
+            row = db.query(ConfigModel).filter(ConfigModel.key == key).first()
+            if row:
+                row.value = value
+            else:
+                db.add(ConfigModel(key=key, value=value))
+            db.commit()
+        finally:
+            db.close()
+
+    def get_settings(self, keys: Optional[List[str]] = None) -> Dict[str, str]:
+        """Получить несколько настроек по ключам (или все если keys=None)"""
+        db = SessionLocal()
+        try:
+            query = db.query(ConfigModel)
+            if keys:
+                query = query.filter(ConfigModel.key.in_(keys))
+            return {row.key: row.value for row in query.all()}
+        finally:
+            db.close()
+
+    def set_settings(self, settings_dict: Dict[str, str]):
+        """Установить несколько настроек сразу"""
+        for key, value in settings_dict.items():
+            self.set_setting(key, value)
+
+    def set_ai_providers(self, providers: list):
+        """Сохранить список AI провайдеров (псевдоним)"""
+        self.save_ai_providers(providers)
+
+    # ── OAuth / Phone ──────────────────────────────────────────────────────────
+
+    def get_user_by_oauth(self, provider: str, oauth_id: str) -> Optional[dict]:
+        """Найти юзера по OAuth провайдеру и ID"""
+        db = SessionLocal()
+        try:
+            user = db.query(UserModel).filter(
+                UserModel.oauth_provider == provider,
+                UserModel.oauth_id == str(oauth_id),
+            ).first()
+            if not user:
+                return None
+            return {
+                "username": user.username,
+                "hashed_password": user.hashed_password,
+                "email": user.email,
+                "plan": user.plan or "free",
+                "plan_expires_at": user.plan_expires_at,
+                "disabled": user.disabled,
+                "created_at": user.created_at.isoformat() if user.created_at else None,
+            }
+        finally:
+            db.close()
+
+    def create_oauth_user(self, username: str, email: Optional[str], provider: str, oauth_id: str) -> dict:
+        """Создать пользователя через OAuth (без пароля)"""
+        db = SessionLocal()
+        try:
+            # Если username занят — добавляем суффикс
+            base = username
+            suffix = 0
+            while db.query(UserModel).filter(UserModel.username == username).first():
+                suffix += 1
+                username = f"{base}{suffix}"
+            db.add(UserModel(
+                username=username,
+                hashed_password=None,
+                email=email,
+                plan="free",
+                oauth_provider=provider,
+                oauth_id=str(oauth_id),
+            ))
+            db.commit()
+            return {"username": username, "plan": "free", "disabled": False}
+        finally:
+            db.close()
+
+    # ── OTP (телефон) ──────────────────────────────────────────────────────────
+
+    def save_otp(self, phone: str, code: str, expires_at: datetime):
+        """Сохранить OTP код для телефона"""
+        db = SessionLocal()
+        try:
+            row = db.query(OtpModel).filter(OtpModel.phone == phone).first()
+            if row:
+                row.code = code
+                row.expires_at = expires_at
+                row.attempts = 0
+            else:
+                db.add(OtpModel(phone=phone, code=code, expires_at=expires_at, attempts=0))
+            db.commit()
+        finally:
+            db.close()
+
+    def verify_otp(self, phone: str, code: str) -> bool:
+        """Проверить OTP. Возвращает True если код верный и не истёк"""
+        db = SessionLocal()
+        try:
+            row = db.query(OtpModel).filter(OtpModel.phone == phone).first()
+            if not row:
+                return False
+            row.attempts += 1
+            if row.attempts > 5:
+                db.commit()
+                return False
+            if row.expires_at < datetime.utcnow():
+                db.commit()
+                return False
+            if row.code != code:
+                db.commit()
+                return False
+            db.delete(row)
+            db.commit()
+            return True
+        finally:
+            db.close()
+
+    def get_user_by_phone(self, phone: str) -> Optional[dict]:
+        """Найти юзера по номеру телефона"""
+        return self.get_user_by_oauth("phone", phone)
+
+    def create_phone_user(self, phone: str) -> dict:
+        """Создать пользователя с телефоном"""
+        username = "user_" + phone.lstrip("+").replace(" ", "")[-8:]
+        return self.create_oauth_user(username, None, "phone", phone)
 
     # ── Admin ──────────────────────────────────────────────────────────────────
 

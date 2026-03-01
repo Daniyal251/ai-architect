@@ -1,6 +1,6 @@
 from fastapi import FastAPI, HTTPException, Depends, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, RedirectResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
 from typing import List, Optional, Dict, Any, Tuple
@@ -10,15 +10,23 @@ import logging
 import time
 import asyncio
 import functools
+import smtplib
+import uuid
+import secrets
+import random
+from urllib.parse import urlencode
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+from fastapi import Request
+import httpx
 from dotenv import load_dotenv
-from groq import Groq
-from groq import APIError, APIConnectionError, RateLimitError
 from app.auth import (
-    create_access_token, 
-    decode_access_token, 
+    create_access_token,
+    decode_access_token,
     get_password_hash,
-    UserCreate, 
-    UserLogin, 
+    verify_password,
+    UserCreate,
+    UserLogin,
     Token,
     User
 )
@@ -45,8 +53,34 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Инициализируем клиент Groq
-client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+# ─── AI провайдеры — дефолтные из .env (переопределяются через Admin Panel) ───
+_ENV_PROVIDERS: list = []
+_or_key   = os.getenv("OPENROUTER_API_KEY", "")
+_groq_key = os.getenv("GROQ_API_KEY", "")
+if _or_key:
+    _ENV_PROVIDERS.append({
+        "name": "OpenRouter", "enabled": True,
+        "base_url": "https://openrouter.ai/api/v1",
+        "model": "meta-llama/llama-3.3-70b-instruct:free",
+        "key": _or_key,
+    })
+if _groq_key:
+    _ENV_PROVIDERS.append({
+        "name": "Groq", "enabled": True,
+        "base_url": "https://api.groq.com/openai/v1",
+        "model": "llama-3.3-70b-versatile",
+        "key": _groq_key,
+    })
+
+_provider_index = 0  # Для round-robin
+
+
+def _get_active_providers() -> list:
+    """Активные провайдеры из БД (приоритет) или из .env"""
+    db_providers = user_db.get_ai_providers()
+    active = [p for p in db_providers if p.get("enabled") and p.get("key")]
+    return active if active else [p for p in _ENV_PROVIDERS if p.get("key")]
+
 
 # Хранилище состояний для сессий генерации
 generation_progress = {}
@@ -190,35 +224,51 @@ PROMPT_CLARIFIER = """Ты — опытный бизнес-аналитик. Т�
   "questions": ["вопрос 1", "вопрос 2"] // пустой массив если вопросов нет
 }}"""
 
-PROMPT_ANALYST = """Ты — бизнес-аналитик. Проанализируй идею ИИ-агента и определи:
-1. Основную задачу агента
-2. Входные данные (что получает)
-3. Выходные данные (что выдаёт)
-4. Интеграции (какие сервисы нужны)
+PROMPT_ANALYST = """Ты — бизнес-аналитик. Твоя задача — сохранить КОНКРЕТНУЮ суть запроса пользователя.
 
-Идея: {idea}
-Контекст из диалога: {context}
+Идея пользователя: {idea}
+Дополнительный контекст: {context}
+
+КРИТИЧЕСКИ ВАЖНО:
+- НЕ пиши общие фразы типа "автоматизация задачи", "помощник для задач"
+- СОХРАНИ конкретику из запроса — если просят "отвечать на отзывы WB" → task = "Автоматические ответы на отзывы Wildberries"
+- Если просят "искать поставщиков в Китае" → task = "Поиск и проверка поставщиков в Китае"
+- Если просят "поставить двигатель V12 на ВАЗ" → task = "Установка двигателя V12 на ВАЗ-2109"
+
+Задача: опиши конкретно ЧТО делает агент — дословно сохрани суть запроса.
 
 Верни ответ в формате JSON:
 {{
-  "task": "...",
-  "inputs": [...],
-  "outputs": [...],
-  "integrations": [...]
+  "task": "ОДНО предложение с КОНКРЕТНОЙ задачей (дословно из запроса пользователя)",
+  "inputs": ["входные данные 1"],
+  "outputs": ["выходные данные 1"],
+  "integrations": ["сервис 1"]
 }}"""
 
-PROMPT_ARCHITECT = """Ты — AI архитектор. Создай системный промпт для ИИ-агента.
+PROMPT_ARCHITECT = """Ты — AI архитектор. Создай КОНКРЕТНОГО специализированного ИИ-агента точно под запрос пользователя.
 
-Задача агента: {task}
+Оригинальный запрос пользователя: {idea}
+Детальная задача (из анализа): {task}
 Интеграции: {integrations}
+
+КРИТИЧЕСКИ ВАЖНО:
+- Создай ИМЕННО ТОГО агента, которого просит пользователь — не "общего ассистента" и не "помощника по автоматизации"
+- Имя и роль должны точно отражать конкретную задачу пользователя
+- system_prompt должен быть детальным (минимум 200 слов), с чёткой ролью, правилами работы и ограничениями
+
+Примеры правильного подхода:
+- Просят "агента для найма сотрудников" → имя "HireBot Pro", роль "Специалист по подбору персонала", промпт про рекрутинг
+- Просят "YouTube аналитик" → имя "TubeInsight AI", роль "YouTube Content Strategist", промпт про анализ видео
+- Просят "менеджер продаж в Telegram" → имя "SalesMaster Bot", роль "Менеджер по продажам в мессенджерах"
+- Просят "помощник врача" → имя "MedAssist AI", роль "Медицинский ассистент", промпт про медицинские протоколы
 
 Верни ответ в формате JSON:
 {{
-  "name": "креативное имя агента",
-  "role": "роль агента",
-  "avatar": "эмодзи",
-  "system_prompt": "полный системный промпт для агента",
-  "tech_stack": [...]
+  "name": "уникальное имя агента (отражает суть задачи, не 'AI Assistant')",
+  "role": "конкретная специализация (не 'Помощник' и не 'Ассистент')",
+  "avatar": "эмодзи подходящий к профессии/задаче",
+  "system_prompt": "детальный системный промпт (роль, задачи, принципы работы, что делать/не делать, стиль общения)",
+  "tech_stack": ["технология 1", "технология 2", "технология 3"]
 }}"""
 
 PROMPT_VISUALIZER = """Ты — визуализатор. Создай схему работы агента на языке Mermaid.js.
@@ -315,58 +365,66 @@ PROMPT_CHAT_ASSISTANT = """Ты — активный помощник-испол
 
 
 def call_groq(prompt: str, max_retries: int = 3, fallback_result: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    """Вызов Groq API с retry-логикой и fallback
-    
-    Args:
-        prompt: Промпт для API
-        max_retries: Максимальное количество попыток
-        fallback_result: Результат при неудаче (если None — выбрасывается исключение)
-    """
+    """Вызов AI API с round-robin по всем активным провайдерам и fallback"""
+    global _provider_index
+    providers = _get_active_providers()
+
+    if not providers:
+        logger.error("Нет активных AI провайдеров — добавьте ключи в Admin Panel")
+        if fallback_result:
+            return fallback_result
+        raise Exception("Нет активных AI провайдеров")
+
     last_error = None
+    total_attempts = max_retries * len(providers)
 
-    for attempt in range(max_retries):
+    for attempt in range(total_attempts):
+        provider = providers[_provider_index % len(providers)]
+        _provider_index = (_provider_index + 1) % len(providers)
+
+        headers = {
+            "Authorization": f"Bearer {provider['key']}",
+            "Content-Type": "application/json",
+        }
+        if "openrouter" in provider.get("base_url", ""):
+            headers["HTTP-Referer"] = "https://aiarchi.ru"
+            headers["X-Title"] = "AI Architect"
+
+        model = provider.get("model", "llama-3.3-70b-versatile")
+        payload = {
+            "model": model,
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": 0.7,
+            "max_tokens": 2048,
+            "response_format": {"type": "json_object"},
+        }
+
         try:
-            logger.info(f"Вызов Groq API (попытка {attempt + 1}/{max_retries})")
-            response = client.chat.completions.create(
-                model="llama-3.3-70b-versatile",
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.7,
-                max_tokens=2048,
-                response_format={"type": "json_object"}
-            )
+            logger.info(f"Вызов {provider['name']} (попытка {attempt + 1}/{total_attempts}), модель: {model}")
+            with httpx.Client(timeout=60) as http:
+                resp = http.post(f"{provider['base_url']}/chat/completions", headers=headers, json=payload)
 
-            content = response.choices[0].message.content
-            logger.info(f"Получен ответ от Groq API, длина: {len(content)}")
+            if resp.status_code != 200:
+                raise Exception(f"HTTP {resp.status_code}: {resp.text[:300]}")
 
-            result = json.loads(content)
-            return result
+            content = resp.json()["choices"][0]["message"]["content"]
+            logger.info(f"Ответ от {provider['name']}, длина: {len(content)}")
+            return json.loads(content)
 
-        except (APIConnectionError, RateLimitError) as e:
+        except json.JSONDecodeError as e:
             last_error = e
-            wait_time = (attempt + 1) * 3  # Экспоненциальная задержка: 3с, 6с, 9с
-            logger.warning(f"Ошибка сети/лимита: {e}. Ждём {wait_time}с...")
-            time.sleep(wait_time)
-
-        except (APIError, json.JSONDecodeError) as e:
-            last_error = e
-            logger.error(f"Ошибка API или парсинга JSON: {e}")
-            # При ошибке парсинга JSON пробуем ещё раз
-            if attempt < max_retries - 1:
-                time.sleep(2)
-                continue
-            break
+            logger.error(f"Ошибка парсинга JSON ({provider['name']}): {e}")
+            time.sleep(1)
 
         except Exception as e:
             last_error = e
-            logger.error(f"Неожиданная ошибка: {e}")
-            break
+            logger.warning(f"Провайдер {provider['name']} недоступен: {e} — пробую следующий")
+            time.sleep(2)
 
-    # Все попытки исчерпаны
     if fallback_result:
-        logger.warning(f"Использую fallback результат после {max_retries} попыток")
+        logger.warning("Все провайдеры недоступны, использую fallback")
         return fallback_result
-    
-    raise Exception(f"Не удалось получить ответ после {max_retries} попыток: {last_error}")
+    raise Exception(f"Все AI провайдеры недоступны: {last_error}")
 
 
 @app.get("/")
@@ -380,6 +438,18 @@ async def register(user_data: UserCreate):
     try:
         user = user_db.create_user(user_data.username, user_data.password, user_data.email)
         logger.info(f"Зарегистрирован новый пользователь: {user_data.username}")
+        send_email(
+            user_data.email or user_data.username,
+            "Добро пожаловать в AI Architect!",
+            f"""<h3 style="color:#22d3ee">Привет, {user_data.username}!</h3>
+            <p>Ваш аккаунт успешно создан. Начните с создания первого ИИ-агента.</p>
+            <p style="margin-top:16px">
+              <a href="https://aiarchi.ru/app/new"
+                 style="background:#22d3ee;color:#0f172a;padding:10px 20px;border-radius:8px;text-decoration:none;font-weight:bold">
+                Создать агента →
+              </a>
+            </p>""",
+        )
         return user
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -412,6 +482,220 @@ async def get_me(current_user: User = Depends(get_current_user)):
     return current_user
 
 
+# ─── OAuth 2.0 (Google / GitHub / Yandex) ────────────────────────────────────
+
+_OAUTH_CONFIGS: Dict[str, Dict[str, str]] = {
+    "google": {
+        "auth_url":     "https://accounts.google.com/o/oauth2/v2/auth",
+        "token_url":    "https://oauth2.googleapis.com/token",
+        "userinfo_url": "https://www.googleapis.com/oauth2/v2/userinfo",
+        "scope":        "openid email profile",
+        "client_id":    os.getenv("GOOGLE_CLIENT_ID", ""),
+        "client_secret": os.getenv("GOOGLE_CLIENT_SECRET", ""),
+    },
+    "github": {
+        "auth_url":     "https://github.com/login/oauth/authorize",
+        "token_url":    "https://github.com/login/oauth/access_token",
+        "userinfo_url": "https://api.github.com/user",
+        "scope":        "user:email",
+        "client_id":    os.getenv("GITHUB_CLIENT_ID", ""),
+        "client_secret": os.getenv("GITHUB_CLIENT_SECRET", ""),
+    },
+    "yandex": {
+        "auth_url":     "https://oauth.yandex.ru/authorize",
+        "token_url":    "https://oauth.yandex.ru/token",
+        "userinfo_url": "https://login.yandex.ru/info",
+        "scope":        "login:email login:info",
+        "client_id":    os.getenv("YANDEX_CLIENT_ID", ""),
+        "client_secret": os.getenv("YANDEX_CLIENT_SECRET", ""),
+    },
+}
+
+_oauth_states: Dict[str, str] = {}  # state → provider (in-memory, достаточно для dev)
+
+
+@app.get("/api/auth/oauth/{provider}")
+async def oauth_redirect(provider: str):
+    """Редирект на страницу авторизации провайдера"""
+    cfg = _OAUTH_CONFIGS.get(provider)
+    if not cfg:
+        raise HTTPException(status_code=400, detail=f"Неизвестный провайдер: {provider}")
+    if not cfg["client_id"]:
+        raise HTTPException(status_code=503, detail=f"OAuth {provider} не настроен (нет CLIENT_ID)")
+
+    state = secrets.token_urlsafe(16)
+    _oauth_states[state] = provider
+
+    base_url = os.getenv("BACKEND_URL", "https://aiarchi.ru")
+    params = {
+        "client_id":     cfg["client_id"],
+        "redirect_uri":  f"{base_url}/api/auth/oauth/{provider}/callback",
+        "response_type": "code",
+        "scope":         cfg["scope"],
+        "state":         state,
+    }
+    if provider == "google":
+        params["access_type"] = "online"
+
+    url = cfg["auth_url"] + "?" + urlencode(params)
+    return RedirectResponse(url)
+
+
+@app.get("/api/auth/oauth/{provider}/callback")
+async def oauth_callback(provider: str, code: str = "", state: str = "", error: str = ""):
+    """Callback после OAuth авторизации"""
+    frontend_url = os.getenv("FRONTEND_URL", "https://aiarchi.ru")
+
+    if error or not code:
+        return RedirectResponse(f"{frontend_url}/auth?error=oauth_denied")
+
+    cfg = _OAUTH_CONFIGS.get(provider)
+    if not cfg:
+        return RedirectResponse(f"{frontend_url}/auth?error=unknown_provider")
+
+    base_url = os.getenv("BACKEND_URL", "https://aiarchi.ru")
+
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            # Обмен кода на access_token
+            token_params = {
+                "client_id":     cfg["client_id"],
+                "client_secret": cfg["client_secret"],
+                "code":          code,
+                "redirect_uri":  f"{base_url}/api/auth/oauth/{provider}/callback",
+                "grant_type":    "authorization_code",
+            }
+            headers = {"Accept": "application/json"}
+            token_resp = await client.post(cfg["token_url"], data=token_params, headers=headers)
+            token_data = token_resp.json()
+            access_token_val = token_data.get("access_token", "")
+            if not access_token_val:
+                logger.error(f"OAuth {provider} no token: {token_data}")
+                return RedirectResponse(f"{frontend_url}/auth?error=oauth_failed")
+
+            # Получаем данные пользователя
+            info_resp = await client.get(
+                cfg["userinfo_url"],
+                headers={"Authorization": f"Bearer {access_token_val}"},
+            )
+            info = info_resp.json()
+
+        # Извлекаем email и id у каждого провайдера
+        if provider == "google":
+            oauth_id = str(info.get("id", ""))
+            email    = info.get("email", "")
+            name     = (info.get("name") or email.split("@")[0]).replace(" ", "_")
+        elif provider == "github":
+            oauth_id = str(info.get("id", ""))
+            email    = info.get("email") or ""
+            name     = (info.get("login") or f"gh_{oauth_id}")
+        elif provider == "yandex":
+            oauth_id = str(info.get("id", ""))
+            email    = info.get("default_email") or ""
+            name     = (info.get("login") or f"ya_{oauth_id}")
+        else:
+            return RedirectResponse(f"{frontend_url}/auth?error=unknown_provider")
+
+        # Ищем или создаём пользователя
+        existing = user_db.get_user_by_oauth(provider, oauth_id)
+        if not existing:
+            # Может быть уже зарегистрирован по email
+            if email:
+                # Проверим по email (ищем по OAuth провайдеру email)
+                pass
+            existing = user_db.create_oauth_user(name, email or None, provider, oauth_id)
+            if email:
+                send_email(
+                    email,
+                    "Добро пожаловать в AI Architect!",
+                    f"""<h3 style="color:#22d3ee">Привет, {existing['username']}!</h3>
+                    <p>Вы вошли через {provider.title()}. Начните с создания первого агента.</p>""",
+                )
+
+        jwt_token = create_access_token(data={"sub": existing["username"]})
+        plan = existing.get("plan", "free")
+        params_out = urlencode({"token": jwt_token, "username": existing["username"], "plan": plan})
+        return RedirectResponse(f"{frontend_url}/auth/callback?{params_out}")
+
+    except Exception as e:
+        logger.error(f"OAuth {provider} error: {e}")
+        return RedirectResponse(f"{frontend_url}/auth?error=oauth_error")
+
+
+# ─── Phone OTP Auth ───────────────────────────────────────────────────────────
+
+class PhoneSendRequest(BaseModel):
+    phone: str  # формат +79001234567
+
+
+class PhoneVerifyRequest(BaseModel):
+    phone: str
+    code: str
+
+
+def _send_sms(phone: str, message: str) -> bool:
+    """Отправить SMS через sms.ru"""
+    api_key = user_db.get_setting("sms_api_key") or os.getenv("SMS_API_KEY", "")
+    if not api_key:
+        logger.warning("SMS не настроен (нет SMS_API_KEY)")
+        return False
+    try:
+        import httpx as _httpx
+        resp = _httpx.get(
+            "https://sms.ru/sms/send",
+            params={"api_id": api_key, "to": phone, "msg": message, "json": 1},
+            timeout=10,
+        )
+        data = resp.json()
+        return data.get("status") == "OK"
+    except Exception as e:
+        logger.error(f"SMS send error: {e}")
+        return False
+
+
+@app.post("/api/auth/phone/send")
+async def phone_send_otp(request: PhoneSendRequest):
+    """Отправить OTP на телефон"""
+    import re
+    phone = re.sub(r"[^\d+]", "", request.phone)
+    if not re.match(r"^\+7\d{10}$", phone):
+        raise HTTPException(status_code=400, detail="Номер телефона должен быть в формате +79001234567")
+
+    code = str(random.randint(100000, 999999))
+    from datetime import timedelta, datetime as _dt
+    expires = _dt.utcnow() + timedelta(minutes=10)
+    user_db.save_otp(phone, code, expires)
+
+    ok = _send_sms(phone, f"AI Architect: ваш код — {code}")
+    if not ok:
+        # В dev-режиме просто логируем (удобно для тестирования)
+        logger.info(f"[DEV] OTP для {phone}: {code}")
+
+    return {"sent": True, "message": "Код отправлен" if ok else "SMS не настроен, код в логах сервера"}
+
+
+@app.post("/api/auth/phone/verify")
+async def phone_verify_otp(request: PhoneVerifyRequest):
+    """Проверить OTP и войти / зарегистрировать"""
+    import re
+    phone = re.sub(r"[^\d+]", "", request.phone)
+
+    if not user_db.verify_otp(phone, request.code.strip()):
+        raise HTTPException(status_code=400, detail="Неверный или истёкший код")
+
+    user = user_db.get_user_by_phone(phone)
+    if not user:
+        user = user_db.create_phone_user(phone)
+
+    token = create_access_token(data={"sub": user["username"]})
+    return {
+        "access_token": token,
+        "token_type": "bearer",
+        "username": user["username"],
+        "plan": user.get("plan", "free"),
+    }
+
+
 @app.get("/api/usage")
 async def get_usage(current_user: User = Depends(get_current_user)):
     """Лимиты и использование текущего пользователя"""
@@ -434,6 +718,59 @@ async def upgrade_plan(
     user_db.upgrade_plan(current_user.username, request.plan)
     logger.info(f"Пользователь {current_user.username} перешёл на план {request.plan}")
     return {"success": True, "plan": request.plan}
+
+
+class UpdateProfileRequest(BaseModel):
+    email: Optional[str] = None
+    current_password: Optional[str] = None
+    new_password: Optional[str] = None
+
+
+@app.post("/api/profile/update")
+async def update_profile(
+    request: UpdateProfileRequest,
+    current_user: User = Depends(get_current_user),
+):
+    """Обновление профиля: email и/или пароль"""
+    user = user_db.get_user(current_user.username)
+    if not user:
+        raise HTTPException(status_code=404, detail="Пользователь не найден")
+
+    # Смена пароля
+    if request.new_password:
+        if not user.get("hashed_password"):
+            # OAuth-пользователь без пароля — разрешаем установить новый
+            pass
+        elif not request.current_password:
+            raise HTTPException(status_code=400, detail="Укажите текущий пароль")
+        elif not verify_password(request.current_password, user["hashed_password"]):
+            raise HTTPException(status_code=400, detail="Неверный текущий пароль")
+        if len(request.new_password) < 6:
+            raise HTTPException(status_code=400, detail="Новый пароль должен быть не менее 6 символов")
+        user_db.update_user_profile(current_user.username, new_password=request.new_password)
+
+    # Смена email
+    if request.email is not None:
+        user_db.update_user_profile(current_user.username, email=request.email)
+
+    logger.info(f"Профиль обновлён: {current_user.username}")
+    return {"success": True}
+
+
+@app.get("/api/profile")
+async def get_profile(current_user: User = Depends(get_current_user)):
+    """Полные данные профиля текущего пользователя"""
+    user = user_db.get_user(current_user.username)
+    if not user:
+        raise HTTPException(status_code=404, detail="Пользователь не найден")
+    usage = user_db.get_usage_info(current_user.username)
+    return {
+        "username": user["username"],
+        "email": user.get("email"),
+        "plan": user.get("plan", "free"),
+        "created_at": user.get("created_at"),
+        **usage,
+    }
 
 
 @app.post("/api/clarify", response_model=ClarifyResponse)
@@ -553,7 +890,8 @@ async def _run_pipeline(session_id: str, idea_text: str, full_context: str) -> N
         logger.info("Шаг 2/4: Архитектор...")
         architect_result = await _run_in_thread(
             call_groq, PROMPT_ARCHITECT.format(
-                task=analyst_result.get("task", "Автоматизация"),
+                idea=idea_text,
+                task=analyst_result.get("task", idea_text),
                 integrations=", ".join(analyst_result.get("integrations", [])),
             ),
             fallback_result=FALLBACK_ARCHITECT
@@ -908,6 +1246,330 @@ async def admin_disable(
         raise HTTPException(status_code=400, detail="Нельзя заблокировать себя")
     user_db.set_user_disabled(request.username, request.disabled)
     return {"success": True}
+
+
+class AdminResetRequest(BaseModel):
+    username: str
+
+
+@app.post("/api/admin/reset-generations")
+async def admin_reset_generations(
+    request: AdminResetRequest,
+    admin: User = Depends(_require_admin),
+):
+    """Сбросить счётчик генераций пользователя за текущий месяц"""
+    user_db.reset_user_generations(request.username)
+    logger.info(f"Admin {admin.username} → сброс генераций {request.username}")
+    return {"success": True}
+
+
+@app.delete("/api/admin/users/{username}")
+async def admin_delete_user(
+    username: str,
+    admin: User = Depends(_require_admin),
+):
+    """Удалить пользователя"""
+    if username == admin.username:
+        raise HTTPException(status_code=400, detail="Нельзя удалить свой аккаунт")
+    if username == "admin":
+        raise HTTPException(status_code=400, detail="Нельзя удалить системный аккаунт admin")
+    success = user_db.delete_user(username)
+    if not success:
+        raise HTTPException(status_code=404, detail="Пользователь не найден")
+    logger.info(f"Admin {admin.username} → удалён пользователь {username}")
+    return {"success": True}
+
+
+# ─── AI Providers ─────────────────────────────────────────────────────────────
+
+@app.get("/api/admin/providers")
+async def get_providers(admin: User = Depends(_require_admin)):
+    """Получить всех AI провайдеров"""
+    from app.ai_providers import ai_provider_manager
+    
+    # Получаем провайдеров из БД или дефолтных
+    db_providers = user_db.get_ai_providers()
+    if db_providers:
+        return db_providers
+    
+    # Возвращаем дефолтных провайдеров
+    return list(ai_provider_manager.default_providers.values())
+
+
+@app.post("/api/admin/providers")
+async def save_providers(
+    providers: list,
+    admin: User = Depends(_require_admin),
+):
+    """Сохранить AI провайдеров"""
+    user_db.save_ai_providers(providers)
+    logger.info(f"Admin {admin.username} → сохранено {len(providers)} провайдеров")
+    return {"success": True}
+
+
+@app.get("/api/admin/providers/stats")
+async def get_provider_stats(admin: User = Depends(_require_admin)):
+    """Получить статистику использования провайдеров"""
+    from app.ai_providers import ai_provider_manager
+    
+    # Статистика из менеджера
+    manager_stats = ai_provider_manager.get_stats()
+    
+    # Статистика из БД
+    db_stats = user_db.get_provider_stats()
+    
+    return {
+        "manager": manager_stats,
+        "database": db_stats,
+    }
+
+
+# ─── Admin Settings ───────────────────────────────────────────────────────────
+
+SETTINGS_KEYS = [
+    "yookassa_shop_id", "yookassa_secret_key",
+    "smtp_host", "smtp_port", "smtp_user", "smtp_password", "smtp_from",
+]
+SENSITIVE_KEYS = {"yookassa_secret_key", "smtp_password"}
+
+
+@app.get("/api/admin/settings")
+async def admin_get_settings(admin: User = Depends(_require_admin)):
+    """Получить настройки платформы"""
+    settings = user_db.get_settings(SETTINGS_KEYS)
+    masked = {k: ("••••••••" if k in SENSITIVE_KEYS and v else v) for k, v in settings.items()}
+    providers = user_db.get_ai_providers()
+    # Маскируем ключи провайдеров
+    safe_providers = []
+    for p in providers:
+        sp = {**p}
+        if sp.get("key"):
+            sp["key"] = sp["key"][:8] + "••••••••"
+        safe_providers.append(sp)
+    return {"settings": masked, "ai_providers": safe_providers}
+
+
+class UpdateSettingsRequest(BaseModel):
+    settings: Optional[Dict[str, str]] = None
+    ai_providers: Optional[List[Dict[str, Any]]] = None
+
+
+@app.post("/api/admin/settings")
+async def admin_update_settings(
+    request: UpdateSettingsRequest,
+    admin: User = Depends(_require_admin),
+):
+    """Обновить настройки платформы"""
+    if request.settings:
+        # Не перезаписываем маскированные значения
+        filtered = {k: v for k, v in request.settings.items()
+                    if v and "••••" not in v and k in SETTINGS_KEYS}
+        if filtered:
+            user_db.set_settings(filtered)
+    if request.ai_providers is not None:
+        user_db.set_ai_providers(request.ai_providers)
+    logger.info(f"Admin {admin.username} обновил настройки")
+    return {"success": True}
+
+
+class TestProviderRequest(BaseModel):
+    base_url: str
+    key: str
+    model: str
+
+
+@app.post("/api/admin/test-provider")
+async def admin_test_provider(
+    request: TestProviderRequest,
+    admin: User = Depends(_require_admin),
+):
+    """Тест AI провайдера — отправляет тестовый запрос"""
+    headers = {
+        "Authorization": f"Bearer {request.key}",
+        "Content-Type": "application/json",
+    }
+    if "openrouter" in request.base_url:
+        headers["HTTP-Referer"] = "https://aiarchi.ru"
+        headers["X-Title"] = "AI Architect"
+    payload = {
+        "model": request.model,
+        "messages": [{"role": "user", "content": 'Say {"ok": true} in JSON'}],
+        "max_tokens": 20,
+        "response_format": {"type": "json_object"},
+    }
+    try:
+        async with httpx.AsyncClient(timeout=15) as http:
+            resp = await http.post(f"{request.base_url}/chat/completions", headers=headers, json=payload)
+        if resp.status_code == 200:
+            return {"success": True, "message": "Провайдер работает ✅"}
+        return {"success": False, "message": f"HTTP {resp.status_code}: {resp.text[:200]}"}
+    except Exception as e:
+        return {"success": False, "message": str(e)[:200]}
+
+
+# ─── Email ────────────────────────────────────────────────────────────────────
+
+def send_email(to_username_or_email: str, subject: str, body_html: str) -> None:
+    """Отправка email через SMTP. Настройки из БД (приоритет) или .env"""
+    settings = user_db.get_settings(["smtp_host", "smtp_port", "smtp_user", "smtp_password", "smtp_from"])
+    smtp_host     = settings.get("smtp_host") or os.getenv("SMTP_HOST", "")
+    smtp_port     = int(settings.get("smtp_port") or os.getenv("SMTP_PORT", "587"))
+    smtp_user     = settings.get("smtp_user") or os.getenv("SMTP_USER", "")
+    smtp_password = settings.get("smtp_password") or os.getenv("SMTP_PASSWORD", "")
+    smtp_from     = settings.get("smtp_from") or os.getenv("SMTP_FROM", smtp_user)
+
+    if not all([smtp_host, smtp_user, smtp_password]):
+        logger.info(f"SMTP не настроен, email не отправлен: {subject}")
+        return
+
+    # Если передан username — ищем email в БД
+    if "@" not in to_username_or_email:
+        user = user_db.get_user(to_username_or_email)
+        to_email = user.get("email") if user else None
+    else:
+        to_email = to_username_or_email
+
+    if not to_email:
+        logger.info(f"Email не указан у пользователя, письмо не отправлено: {subject}")
+        return
+
+    try:
+        msg = MIMEMultipart("alternative")
+        msg["Subject"] = subject
+        msg["From"] = f"AI Architect <{smtp_from}>"
+        msg["To"] = to_email
+
+        html = f"""<!DOCTYPE html>
+<html><body style="background:#0f172a;color:#e2e8f0;font-family:sans-serif;padding:32px;margin:0">
+  <div style="max-width:560px;margin:0 auto">
+    <h2 style="color:#22d3ee;margin-bottom:8px">AI Architect</h2>
+    <div style="background:#1e293b;border-radius:12px;padding:24px;margin-top:16px">
+      {body_html}
+    </div>
+    <p style="color:#475569;font-size:12px;margin-top:24px">
+      Платформа AI Architect · <a href="https://aiarchi.ru" style="color:#22d3ee">aiarchi.ru</a>
+    </p>
+  </div>
+</body></html>"""
+
+        msg.attach(MIMEText(html, "html", "utf-8"))
+        with smtplib.SMTP(smtp_host, smtp_port, timeout=10) as server:
+            server.ehlo()
+            server.starttls()
+            server.login(smtp_user, smtp_password)
+            server.sendmail(smtp_from, to_email, msg.as_string())
+        logger.info(f"Email отправлен → {to_email}: {subject}")
+    except Exception as e:
+        logger.error(f"Ошибка отправки email: {e}")
+
+
+# ─── YuKassa Payments ─────────────────────────────────────────────────────────
+
+PLAN_PRICES: Dict[str, Dict[str, str]] = {
+    "starter": {"amount": "990.00", "description": "Тариф Starter — 25 генераций/месяц"},
+    "pro":     {"amount": "2990.00", "description": "Тариф Pro — безлимитные генерации"},
+}
+
+
+class CreatePaymentRequest(BaseModel):
+    plan: str
+
+
+def _get_yookassa_creds():
+    s = user_db.get_settings(["yookassa_shop_id", "yookassa_secret_key"])
+    shop_id    = s.get("yookassa_shop_id") or os.getenv("YOOKASSA_SHOP_ID", "")
+    secret_key = s.get("yookassa_secret_key") or os.getenv("YOOKASSA_SECRET_KEY", "")
+    return shop_id, secret_key
+
+
+@app.get("/api/payments/status")
+async def payment_status(current_user: User = Depends(get_current_user)):
+    """Проверка, настроена ли платёжная система"""
+    shop_id, secret_key = _get_yookassa_creds()
+    return {"enabled": bool(shop_id and secret_key)}
+
+
+@app.post("/api/payments/create")
+async def create_payment(
+    request: CreatePaymentRequest,
+    current_user: User = Depends(get_current_user),
+):
+    """Создать платёж ЮKassa и вернуть URL для оплаты"""
+    shop_id, secret_key = _get_yookassa_creds()
+
+    if not shop_id or not secret_key:
+        raise HTTPException(status_code=503, detail="Платёжная система не настроена")
+
+    plan_info = PLAN_PRICES.get(request.plan)
+    if not plan_info:
+        raise HTTPException(status_code=400, detail="Неверный тариф")
+
+    frontend_url = os.getenv("FRONTEND_URL", "https://aiarchi.ru")
+    payload = {
+        "amount": {"value": plan_info["amount"], "currency": "RUB"},
+        "confirmation": {
+            "type": "redirect",
+            "return_url": f"{frontend_url}/pricing?status=success&plan={request.plan}",
+        },
+        "capture": True,
+        "description": f"{plan_info['description']} (пользователь: {current_user.username})",
+        "metadata": {"username": current_user.username, "plan": request.plan},
+    }
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.post(
+            "https://api.yookassa.ru/v3/payments",
+            auth=(shop_id, secret_key),
+            json=payload,
+            headers={"Idempotence-Key": str(uuid.uuid4())},
+        )
+    if resp.status_code not in (200, 201):
+        logger.error(f"YuKassa error: {resp.text}")
+        raise HTTPException(status_code=502, detail="Ошибка платёжной системы")
+
+    data = resp.json()
+    return {
+        "payment_id": data["id"],
+        "confirmation_url": data["confirmation"]["confirmation_url"],
+    }
+
+
+@app.post("/api/payments/webhook")
+async def payment_webhook(req: Request):
+    """Webhook от ЮKassa при подтверждении оплаты"""
+    try:
+        body = await req.json()
+    except Exception:
+        return {"ok": True}
+
+    if body.get("type") != "notification":
+        return {"ok": True}
+
+    obj = body.get("object", {})
+    if obj.get("status") != "succeeded":
+        return {"ok": True}
+
+    meta = obj.get("metadata", {})
+    username = meta.get("username")
+    plan = meta.get("plan")
+
+    if username and plan and plan in PLAN_PRICES:
+        user_db.upgrade_plan(username, plan)
+        logger.info(f"YuKassa webhook: {username} → {plan}")
+        plan_ru = {"starter": "Starter", "pro": "Pro"}.get(plan, plan.title())
+        send_email(
+            username,
+            f"Тариф {plan_ru} активирован — AI Architect",
+            f"""<h3 style="color:#22d3ee">Оплата прошла успешно!</h3>
+            <p>Тариф <strong>{plan_ru}</strong> активирован для вашего аккаунта.</p>
+            <p style="margin-top:16px">
+              <a href="https://aiarchi.ru/app/new"
+                 style="background:#22d3ee;color:#0f172a;padding:10px 20px;border-radius:8px;text-decoration:none;font-weight:bold">
+                Создать агента →
+              </a>
+            </p>""",
+        )
+
+    return {"ok": True}
 
 
 if __name__ == "__main__":

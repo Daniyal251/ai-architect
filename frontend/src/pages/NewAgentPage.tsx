@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
+
 import { Landing } from '../components/Landing';
 import { ClarificationDialog } from '../components/ClarificationDialog';
 import { LoadingScreen } from '../components/LoadingScreen';
@@ -12,7 +13,7 @@ type Step = 'form' | 'clarification' | 'loading';
 
 export function NewAgentPage() {
   const navigate = useNavigate();
-  const { username, logout, usage, refreshUsage, plan } = useAuth();
+  const { usage, refreshUsage } = useAuth();
   const [step, setStep] = useState<Step>('form');
   const [idea, setIdea] = useState('');
   const [showUpgrade, setShowUpgrade] = useState(false);
@@ -58,64 +59,26 @@ export function NewAgentPage() {
   const isWarning = !isUnlimited && genUsed >= genLimit - 1;
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-gray-900 via-purple-900 to-gray-900">
-      <header className="p-4 border-b border-white/10">
-        <div className="max-w-7xl mx-auto flex justify-between items-center flex-wrap gap-3">
-          <button
-            onClick={() => navigate('/')}
-            className="text-2xl font-bold bg-gradient-to-r from-cyan-400 to-purple-500 bg-clip-text text-transparent"
-          >
-            AI Architect
-          </button>
-          <div className="flex items-center gap-3 flex-wrap">
-            {/* Счётчик генераций */}
-            {!isUnlimited && (
-              <div
-                className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm cursor-pointer transition
-                  ${isWarning
-                    ? 'bg-orange-500/20 border border-orange-500/40 text-orange-300'
-                    : 'bg-white/5 border border-white/10 text-gray-300'
-                  }`}
-                onClick={() => setShowUpgrade(true)}
-                title="Нажми для апгрейда"
-              >
-                <span>{genUsed}/{genLimit}</span>
-                <div className="w-16 h-1.5 bg-white/10 rounded-full overflow-hidden">
-                  <div
-                    className={`h-full rounded-full ${isWarning ? 'bg-orange-400' : 'bg-cyan-500'}`}
-                    style={{ width: `${Math.min(100, (genUsed / genLimit) * 100)}%` }}
-                  />
-                </div>
-                {isWarning && <span className="text-xs">⚠️</span>}
-              </div>
-            )}
-            {isUnlimited && (
-              <span className="text-xs px-2 py-1 bg-cyan-500/20 text-cyan-400 rounded-lg border border-cyan-500/30">
-                {plan === 'admin' ? '👑 Admin' : '∞ Pro'}
-              </span>
-            )}
-            <button
-              onClick={() => navigate('/app/agents')}
-              className="px-4 py-2 text-sm text-gray-400 hover:text-white transition"
+    <div className="min-h-screen bg-gradient-to-br from-gray-900 via-purple-900/30 to-gray-900">
+
+      {/* Генерации — inline badge в верхней части страницы */}
+      {(!isUnlimited || isWarning) && (
+        <div className="flex justify-end px-6 pt-4">
+          {!isUnlimited && (
+            <div
+              className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm cursor-pointer transition
+                ${isWarning
+                  ? 'bg-orange-500/20 border border-orange-500/40 text-orange-300'
+                  : 'bg-white/5 border border-white/10 text-gray-400'
+                }`}
+              onClick={() => setShowUpgrade(true)}
             >
-              Мои агенты
-            </button>
-            <button
-              onClick={() => navigate('/pricing')}
-              className="px-3 py-1.5 text-sm bg-gradient-to-r from-cyan-500/20 to-purple-500/20
-                         border border-cyan-500/30 text-cyan-400 rounded-lg hover:opacity-80 transition"
-            >
-              Тарифы
-            </button>
-            <button
-              onClick={logout}
-              className="px-4 py-2 text-sm text-gray-400 hover:text-white transition"
-            >
-              Выйти ({username})
-            </button>
-          </div>
+              <span>{genUsed}/{genLimit} генераций</span>
+              {isWarning && <span className="text-xs">⚠️</span>}
+            </div>
+          )}
         </div>
-      </header>
+      )}
 
       {/* Ошибка лимита из хука (HTTP 402) */}
       {error && error.includes('генераци') && !showUpgrade && (
