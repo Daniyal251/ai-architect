@@ -162,7 +162,7 @@ export function Dashboard({ data, agentId, onReset }: DashboardProps) {
         <div id="agent-content" className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           <AgentProfile profile={data.agent_profile} description={data.description} />
           <FlowDiagram code={data.mermaid_code} />
-          <Timeline steps={data.implementation_plan} onExecuteStep={openChatForStep} />
+          <Timeline steps={data.implementation_plan} onExecuteStep={openChatForStep} onDrillDown={openChatWithMessage} />
           <ProjectMetrics metrics={data.project_metrics} onHelpWithStep={openChatWithMessage} />
           <SystemPrompt prompt={data.system_prompt} techStack={data.tech_stack} />
         </div>

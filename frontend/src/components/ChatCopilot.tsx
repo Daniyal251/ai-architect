@@ -20,6 +20,7 @@ export function ChatCopilot({ isOpen, onClose, dashboardContext, agentId, initia
   const [loading, setLoading] = useState(false);
   const [suggestedActions, setSuggestedActions] = useState<string[]>([]);
   const [currentStepContext, setCurrentStepContext] = useState<string | null>(null);
+  const [historyLoaded, setHistoryLoaded] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const didAutoSend = useRef(false);
 
@@ -30,6 +31,26 @@ export function ChatCopilot({ isOpen, onClose, dashboardContext, agentId, initia
   useEffect(() => {
     scrollToBottom();
   }, [messages]);
+
+  // Загружаем историю чата из БД при открытии сохранённого агента
+  useEffect(() => {
+    if (isOpen && agentId && !historyLoaded) {
+      setHistoryLoaded(true);
+      fetch(`/api/agents/${agentId}/chat-history`, {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+        .then(r => r.ok ? r.json() : null)
+        .then(d => {
+          if (d?.messages?.length) {
+            setMessages(d.messages.map((m: any) => ({ role: m.role, content: m.content })));
+          }
+        })
+        .catch(() => {});
+    }
+    if (!isOpen) {
+      setHistoryLoaded(false);
+    }
+  }, [isOpen, agentId]);
 
   // Когда открывается с конкретным шагом — автоматически отправляем запрос
   useEffect(() => {
@@ -139,7 +160,27 @@ export function ChatCopilot({ isOpen, onClose, dashboardContext, agentId, initia
               </p>
             )}
           </div>
-          <button onClick={onClose} className="text-gray-400 hover:text-white transition p-2 ml-2 flex-shrink-0">
+          {messages.length > 0 && (
+            <button
+              onClick={() => {
+                const text = messages.map(m =>
+                  `${m.role === 'user' ? 'Я' : agentName}: ${m.content}`
+                ).join('\n\n');
+                const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `chat_${agentName.replace(/[^\w]/g, '_')}.txt`;
+                a.click();
+                URL.revokeObjectURL(url);
+              }}
+              className="text-gray-400 hover:text-cyan-400 transition p-2 flex-shrink-0 text-sm"
+              title="Скачать чат"
+            >
+              ⬇
+            </button>
+          )}
+          <button onClick={onClose} className="text-gray-400 hover:text-white transition p-2 ml-1 flex-shrink-0">
             ✕
           </button>
         </div>

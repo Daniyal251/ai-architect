@@ -668,5 +668,54 @@ class Database:
             db.close()
 
 
+    def get_agents_for_analytics(self, limit: int = 40) -> list:
+        """Возвращает последние N агентов для AI-аналитики"""
+        db = SessionLocal()
+        try:
+            agents = (
+                db.query(AgentModel)
+                .order_by(AgentModel.created_at.desc())
+                .limit(limit)
+                .all()
+            )
+            result = []
+            for a in agents:
+                chat_history = []
+                try:
+                    all_msgs = json.loads(a.chat_history or "[]")
+                    # Берём первые 5 вопросов пользователя
+                    chat_history = [
+                        m["content"] for m in all_msgs
+                        if m.get("role") == "user"
+                    ][:5]
+                except Exception:
+                    pass
+                result.append({
+                    "name": a.name,
+                    "role": a.role,
+                    "idea": a.idea,
+                    "chat_questions": chat_history,
+                    "created_at": a.created_at.isoformat() if a.created_at else None,
+                })
+            return result
+        finally:
+            db.close()
+
+    def get_agent_chat_history(self, agent_id: str, username: str) -> Optional[list]:
+        """Возвращает chat_history агента если он принадлежит пользователю"""
+        db = SessionLocal()
+        try:
+            agent = (
+                db.query(AgentModel)
+                .filter(AgentModel.id == agent_id, AgentModel.user_username == username)
+                .first()
+            )
+            if not agent:
+                return None
+            return json.loads(agent.chat_history or "[]")
+        finally:
+            db.close()
+
+
 # Глобальный экземпляр БД
 user_db = Database()

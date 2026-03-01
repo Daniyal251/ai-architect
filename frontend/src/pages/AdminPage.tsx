@@ -30,10 +30,11 @@ interface PlatformSettings {
   yandex_client_secret: string;
   sms_api_key: string;
   backend_url: string;
+  claude_api_key: string;
   [key: string]: string;
 }
 
-type Tab = 'providers' | 'users' | 'oauth' | 'email' | 'payments';
+type Tab = 'providers' | 'users' | 'oauth' | 'email' | 'payments' | 'analytics';
 
 const EMPTY_SETTINGS: PlatformSettings = {
   yookassa_shop_id: '', yookassa_secret_key: '',
@@ -43,6 +44,7 @@ const EMPTY_SETTINGS: PlatformSettings = {
   yandex_client_id: '', yandex_client_secret: '',
   sms_api_key: '',
   backend_url: 'https://aiarchi.ru',
+  claude_api_key: '',
 };
 
 function SettingField({
@@ -95,6 +97,9 @@ export function AdminPage() {
   const [editingProvider, setEditingProvider] = useState<string | null>(null);
   const [tempKey, setTempKey] = useState('');
   const [settings, setSettings] = useState<PlatformSettings>(EMPTY_SETTINGS);
+  const [analyticsData, setAnalyticsData] = useState<{analysis: string; stats: any; agents_analyzed: number} | null>(null);
+  const [analyticsLoading, setAnalyticsLoading] = useState(false);
+  const [analyticsError, setAnalyticsError] = useState('');
 
   useEffect(() => {
     if (usage && plan !== 'admin') {
@@ -184,17 +189,37 @@ export function AdminPage() {
   const setPatch = (patch: Partial<PlatformSettings>) =>
     setSettings(p => ({ ...p, ...patch } as PlatformSettings));
 
+  const runAnalytics = async () => {
+    setAnalyticsLoading(true);
+    setAnalyticsError('');
+    try {
+      const r = await fetch(`${API_URL}/api/admin/analytics`, { headers: authHeaders });
+      if (!r.ok) {
+        const err = await r.json().catch(() => ({ detail: 'Ошибка запроса' }));
+        setAnalyticsError(err.detail || 'Ошибка запроса');
+        return;
+      }
+      const data = await r.json();
+      setAnalyticsData(data);
+    } catch (e) {
+      setAnalyticsError('Сетевая ошибка. Проверьте соединение.');
+    } finally {
+      setAnalyticsLoading(false);
+    }
+  };
+
   const filteredUsers = users.filter(u =>
     u.username.toLowerCase().includes(search.toLowerCase()) ||
     (u.email || '').toLowerCase().includes(search.toLowerCase())
   );
 
   const TABS: {id: Tab; label: string; icon: string}[] = [
-    { id: 'providers', label: 'AI Провайдеры', icon: '🤖' },
-    { id: 'users',     label: 'Пользователи', icon: '👥' },
-    { id: 'oauth',     label: 'OAuth / SMS',  icon: '🔐' },
-    { id: 'email',     label: 'Email / SMTP', icon: '📧' },
-    { id: 'payments',  label: 'Оплата',       icon: '💳' },
+    { id: 'providers',  label: 'AI Провайдеры', icon: '🤖' },
+    { id: 'users',      label: 'Пользователи',  icon: '👥' },
+    { id: 'oauth',      label: 'OAuth / SMS',   icon: '🔐' },
+    { id: 'email',      label: 'Email / SMTP',  icon: '📧' },
+    { id: 'payments',   label: 'Оплата',        icon: '💳' },
+    { id: 'analytics',  label: 'Аналитика ИИ',  icon: '📊' },
   ];
 
   if (loading) {
@@ -523,6 +548,22 @@ export function AdminPage() {
                 Сохранить URL
               </button>
             </div>
+
+            {/* Claude API Key */}
+            <div className="bg-white/5 border border-cyan-500/20 rounded-2xl p-6">
+              <h2 className="text-lg font-semibold mb-1">🧠 Claude API (Аналитика)</h2>
+              <p className="text-xs text-gray-500 mb-4">
+                Нужен для вкладки «Аналитика ИИ» — Claude анализирует ваших пользователей и агентов.{' '}
+                <a href="https://console.anthropic.com" target="_blank" className="text-cyan-400 hover:underline">Получить ключ →</a>
+              </p>
+              <div className="max-w-sm mb-4">
+                <SettingField label="Claude API Key" type="password" value={settings.claude_api_key} onChange={v => setPatch({claude_api_key: v})} placeholder="sk-ant-api03-..." />
+              </div>
+              <button onClick={() => handleSaveSettings(['claude_api_key'])} disabled={saving}
+                className="px-4 py-2 bg-cyan-600 hover:bg-cyan-500 rounded-lg text-sm font-medium transition disabled:opacity-50">
+                Сохранить Claude ключ
+              </button>
+            </div>
           </div>
         )}
 
@@ -581,6 +622,89 @@ export function AdminPage() {
                 {settings.backend_url}/api/payment/webhook
               </code>
             </div>
+          </div>
+        )}
+
+        {/* Tab: Analytics */}
+        {activeTab === 'analytics' && (
+          <div className="space-y-6">
+            {/* Stats cards */}
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              {[
+                { label: 'Пользователей', value: stats?.total_users ?? 0, icon: '👥', color: 'cyan' },
+                { label: 'Платящих', value: stats?.paid_users ?? 0, icon: '💳', color: 'green' },
+                { label: 'Агентов', value: stats?.total_agents ?? 0, icon: '🤖', color: 'purple' },
+                { label: 'Генераций/мес', value: stats?.generations_this_month ?? 0, icon: '⚡', color: 'yellow' },
+              ].map(s => (
+                <div key={s.label} className="bg-white/5 border border-white/10 rounded-xl p-4 text-center">
+                  <div className="text-2xl mb-1">{s.icon}</div>
+                  <div className="text-2xl font-bold text-white">{s.value}</div>
+                  <div className="text-xs text-gray-500 mt-0.5">{s.label}</div>
+                </div>
+              ))}
+            </div>
+
+            {/* Run button */}
+            <div className="bg-white/5 border border-white/10 rounded-2xl p-6">
+              <div className="flex items-start justify-between gap-4 mb-4">
+                <div>
+                  <h2 className="text-lg font-semibold">🧠 Анализ Claude AI</h2>
+                  <p className="text-sm text-gray-400 mt-1">
+                    Claude проанализирует последних {analyticsData?.agents_analyzed ?? 40} агентов и их чаты —
+                    найдёт проблемы качества, паттерны запросов и даст рекомендации по улучшению платформы.
+                  </p>
+                </div>
+                <button
+                  onClick={runAnalytics}
+                  disabled={analyticsLoading}
+                  className="flex-shrink-0 px-5 py-2.5 bg-gradient-to-r from-cyan-600 to-purple-600
+                             hover:from-cyan-500 hover:to-purple-500 rounded-xl text-sm font-medium
+                             transition disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap"
+                >
+                  {analyticsLoading ? '⏳ Анализирую...' : '▶ Запустить анализ'}
+                </button>
+              </div>
+
+              {!settings.claude_api_key && (
+                <div className="p-4 bg-yellow-500/10 border border-yellow-500/30 rounded-xl text-sm text-yellow-300">
+                  ⚠️ Claude API Key не настроен. Перейдите на вкладку <strong>OAuth / SMS</strong> → секция «Claude API» и добавьте ключ.
+                </div>
+              )}
+
+              {analyticsLoading && (
+                <div className="flex items-center gap-3 p-4 bg-cyan-500/10 border border-cyan-500/20 rounded-xl">
+                  <div className="w-5 h-5 border-2 border-cyan-500 border-t-transparent rounded-full animate-spin flex-shrink-0" />
+                  <p className="text-sm text-cyan-300">Claude анализирует данные... обычно это занимает 20-40 секунд</p>
+                </div>
+              )}
+
+              {analyticsError && (
+                <div className="p-4 bg-red-500/10 border border-red-500/30 rounded-xl text-sm text-red-300">
+                  ❌ {analyticsError}
+                </div>
+              )}
+            </div>
+
+            {/* Analysis result */}
+            {analyticsData && !analyticsLoading && (
+              <div className="bg-white/5 border border-white/10 rounded-2xl p-6">
+                <div className="flex items-center justify-between mb-4">
+                  <h3 className="font-semibold text-white">Результат анализа</h3>
+                  <span className="text-xs text-gray-500">Проанализировано агентов: {analyticsData.agents_analyzed}</span>
+                </div>
+                <div className="prose prose-invert prose-sm max-w-none">
+                  <pre className="whitespace-pre-wrap text-sm text-gray-200 font-sans leading-relaxed bg-black/20 p-4 rounded-xl overflow-auto">
+                    {analyticsData.analysis}
+                  </pre>
+                </div>
+                <button
+                  onClick={runAnalytics}
+                  className="mt-4 px-4 py-2 bg-white/10 hover:bg-white/20 rounded-lg text-sm transition"
+                >
+                  ↻ Обновить анализ
+                </button>
+              </div>
+            )}
           </div>
         )}
 

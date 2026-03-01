@@ -348,7 +348,7 @@ PROMPT_PM = """Ты — проект-менеджер. Проанализиру�
   "risk_status": "normal" | "warning" | "high"
 }}"""
 
-PROMPT_CHAT_ASSISTANT = """Ты — активный помощник-исполнитель, который помогает пользователю ДОВЕСТИ ЗАДАЧУ ДО КОНЦА.
+PROMPT_CHAT_ASSISTANT = """Ты — активный помощник-исполнитель на платформе AI Architect. Помогаешь пользователю ДОВЕСТИ ЗАДАЧУ ДО КОНЦА.
 
 Контекст задачи:
 - Агент/проект: {agent_name} ({agent_role})
@@ -360,22 +360,47 @@ PROMPT_CHAT_ASSISTANT = """Ты — активный помощник-испол
 
 Вопрос/сообщение пользователя: {message}
 
-Твой подход:
-1. Если пользователь спрашивает ЧТО делать — давай КОНКРЕТНЫЕ инструкции (не абстрактные советы)
-2. Если спрашивает ГДЕ купить/найти — называй конкретные места, сервисы, ресурсы
-3. Если спрашивает СКОЛЬКО стоит — давай реальные диапазоны цен с пояснениями
-4. Если пользователь застрял — предложи альтернативный путь
-5. После ответа — предложи СЛЕДУЮЩИЙ конкретный шаг, который пользователь может сделать прямо сейчас
-
-Важно:
-- Будь конкретным, не общим
-- Давай ссылки на реальные ресурсы если знаешь
-- Разбивай сложные шаги на маленькие действия
-- Отвечай как опытный практик, который сам это делал
+ПРАВИЛА (строго соблюдай):
+- Если история переписки пустая или пользователь пишет "с чего начать" — ПЕРВЫМ делом спроси об опыте:
+  "Вы уже сталкивались с этой темой? Работаете один или есть команда?"
+  Не давай инструкции пока не выяснишь уровень опыта.
+- Давай максимум 5-6 коротких пунктов, не стены текста
+- НЕ давай программный код без прямого запроса
+- Каждый шаг должен быть конкретным действием (что открыть, куда зайти, что нажать)
+- Если пользователь застрял — предложи альтернативный простой путь
+- После ответа — предложи 1-2 следующих конкретных шага
 
 Верни ответ в формате JSON:
 {{
-  "response": "конкретный ответ с практическими деталями",
+  "response": "конкретный ответ, максимум 5-6 пунктов",
+  "suggested_actions": ["Следующий шаг 1", "Следующий шаг 2"]
+}}"""
+
+PROMPT_CHAT_WITH_AGENT = """Ты — {agent_name}, {agent_role}.
+
+ТВОЯ ЭКСПЕРТИЗА И ЗНАНИЯ:
+{agent_system_prompt}
+
+---
+ПРАВИЛА ОБЩЕНИЯ (платформа для начинающих предпринимателей):
+- Если это первое сообщение — СНАЧАЛА задай уточняющий вопрос:
+  "Вы уже работали с этой темой? Вы один или с командой? Что уже пробовали?"
+- Давай инструкции пошагово, от простого к сложному (максимум 5-6 пунктов)
+- НЕ давай код и технические детали без прямого запроса
+- Каждый шаг = конкретное действие (что нажать, куда пойти, что заполнить)
+- Если пользователь не понимает — объясни проще, с аналогиями из жизни
+- Задавай уточняющие вопросы если запрос неясен
+
+Текущий шаг проекта: {current_step}
+
+История переписки:
+{conversation_history}
+
+Вопрос пользователя: {message}
+
+Верни ответ в формате JSON:
+{{
+  "response": "ответ с конкретными пошаговыми инструкциями",
   "suggested_actions": ["Следующий шаг 1", "Следующий шаг 2", "Следующий шаг 3"]
 }}"""
 
@@ -1153,6 +1178,15 @@ async def get_agent(agent_id: str, current_user: User = Depends(get_current_user
     return agent
 
 
+@app.get("/api/agents/{agent_id}/chat-history")
+async def get_agent_chat_history(agent_id: str, current_user: User = Depends(get_current_user)):
+    """Получить историю чата с агентом"""
+    messages = user_db.get_agent_chat_history(agent_id, current_user.username)
+    if messages is None:
+        raise HTTPException(status_code=404, detail="Агент не найден")
+    return {"messages": messages}
+
+
 @app.delete("/api/agents/{agent_id}")
 async def delete_agent(agent_id: str, current_user: User = Depends(get_current_user)):
     """Удаление агента"""
@@ -1191,15 +1225,27 @@ async def chat_with_agent(
     if not conversation_history_str:
         conversation_history_str = "Нет предыдущих сообщений"
 
-    chat_prompt = PROMPT_CHAT_ASSISTANT.format(
-        agent_name=dashboard_data["agent_profile"]["name"],
-        agent_role=dashboard_data["agent_profile"]["role"],
-        description=dashboard_data["description"],
-        tech_stack=", ".join(dashboard_data["tech_stack"]),
-        current_step=request.current_step or "не указан",
-        conversation_history=conversation_history_str,
-        message=request.message,
-    )
+    # Используем agent's system_prompt для контекстного ответа
+    agent_system_prompt = dashboard_data.get("system_prompt", "")
+    if agent_system_prompt:
+        chat_prompt = PROMPT_CHAT_WITH_AGENT.format(
+            agent_name=dashboard_data["agent_profile"]["name"],
+            agent_role=dashboard_data["agent_profile"]["role"],
+            agent_system_prompt=agent_system_prompt,
+            current_step=request.current_step or "не указан",
+            conversation_history=conversation_history_str,
+            message=request.message,
+        )
+    else:
+        chat_prompt = PROMPT_CHAT_ASSISTANT.format(
+            agent_name=dashboard_data["agent_profile"]["name"],
+            agent_role=dashboard_data["agent_profile"]["role"],
+            description=dashboard_data.get("description", ""),
+            tech_stack=", ".join(dashboard_data.get("tech_stack", [])),
+            current_step=request.current_step or "не указан",
+            conversation_history=conversation_history_str,
+            message=request.message,
+        )
 
     result = call_groq(chat_prompt)
 
@@ -1227,6 +1273,91 @@ def _require_admin(current_user: User = Depends(get_current_user)) -> User:
 async def admin_stats(admin: User = Depends(_require_admin)):
     """Общая статистика платформы"""
     return user_db.get_admin_stats()
+
+
+@app.get("/api/admin/analytics")
+async def admin_analytics(admin: User = Depends(_require_admin)):
+    """AI-аналитика платформы через Claude API"""
+    # Получаем ключ Claude
+    claude_key = user_db.get_setting("claude_api_key") or os.getenv("ANTHROPIC_API_KEY", "")
+    if not claude_key:
+        raise HTTPException(
+            status_code=400,
+            detail="Claude API key не настроен. Добавьте ключ в Админ-панели → вкладка OAuth/Настройки → Claude API Key."
+        )
+
+    stats = user_db.get_admin_stats()
+    agents = user_db.get_agents_for_analytics(limit=40)
+
+    # Строим сводку агентов
+    agents_summary = []
+    for a in agents:
+        summary_parts = [f"Идея: {a['idea'][:200] if a['idea'] else 'нет'}", f"Имя: {a['name']}", f"Роль: {a['role']}"]
+        if a["chat_questions"]:
+            summary_parts.append("Вопросы в чате: " + " | ".join(a["chat_questions"][:3]))
+        agents_summary.append("\n".join(summary_parts))
+
+    analysis_prompt = f"""Ты — аналитик качества AI-продукта. Проанализируй данные платформы AI Architect и дай конкретные рекомендации.
+
+СТАТИСТИКА ПЛАТФОРМЫ:
+- Всего пользователей: {stats['total_users']}
+- Платных пользователей: {stats['paid_users']}
+- Бесплатных: {stats['free_users']}
+- Всего агентов создано: {stats['total_agents']}
+- Генераций в этом месяце: {stats['generations_this_month']}
+
+ПОСЛЕДНИЕ {len(agents)} АГЕНТОВ (идея → что получилось → вопросы в чате):
+{chr(10).join(f"---{chr(10)}{s}" for s in agents_summary[:20])}
+
+Проанализируй и ответь по структуре:
+
+## 📊 Общая картина
+[2-3 предложения о состоянии платформы]
+
+## 🎯 Что пользователи создают
+[Топ-3 типа запросов/агентов, паттерны]
+
+## ⚠️ Проблемы качества
+[Где агенты получаются generic ("AI Assistant"), где контекст теряется, что идёт не так]
+
+## 💬 Что спрашивают в чате
+[Анализ вопросов пользователей — где они теряются, что непонятно]
+
+## 🔧 Конкретные рекомендации
+[5-7 конкретных улучшений для промптов, UX, логики генерации]
+
+## 💡 Возможности роста
+[Что добавить или изменить чтобы больше пользователей стали платными]
+
+Отвечай на русском, конкретно, без воды."""
+
+    try:
+        async with httpx.AsyncClient(timeout=90) as http:
+            resp = await http.post(
+                "https://api.anthropic.com/v1/messages",
+                headers={
+                    "x-api-key": claude_key,
+                    "anthropic-version": "2023-06-01",
+                    "content-type": "application/json",
+                },
+                json={
+                    "model": "claude-opus-4-6",
+                    "max_tokens": 4096,
+                    "messages": [{"role": "user", "content": analysis_prompt}],
+                },
+            )
+        if resp.status_code != 200:
+            raise HTTPException(status_code=502, detail=f"Claude API вернул ошибку: {resp.status_code} — {resp.text[:300]}")
+        data = resp.json()
+        analysis_text = data["content"][0]["text"]
+    except httpx.TimeoutException:
+        raise HTTPException(status_code=504, detail="Claude API не ответил вовремя. Попробуйте снова.")
+
+    return {
+        "analysis": analysis_text,
+        "stats": stats,
+        "agents_analyzed": len(agents),
+    }
 
 
 @app.get("/api/admin/users")
@@ -1369,8 +1500,9 @@ SETTINGS_KEYS = [
     "yandex_client_id", "yandex_client_secret",
     "sms_api_key",
     "backend_url",
+    "claude_api_key",
 ]
-SENSITIVE_KEYS = {"yookassa_secret_key", "smtp_password", "google_client_secret", "github_client_secret", "yandex_client_secret", "sms_api_key"}
+SENSITIVE_KEYS = {"yookassa_secret_key", "smtp_password", "google_client_secret", "github_client_secret", "yandex_client_secret", "sms_api_key", "claude_api_key"}
 
 
 @app.get("/api/admin/settings")

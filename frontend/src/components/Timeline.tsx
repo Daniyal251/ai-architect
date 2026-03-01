@@ -3,10 +3,11 @@ import type { ImplementationStep } from '../types.js';
 
 interface Props {
   steps: ImplementationStep[];
-  onExecuteStep?: (step: ImplementationStep) => void; // коллбэк → открывает чат с этим шагом
+  onExecuteStep?: (step: ImplementationStep) => void;
+  onDrillDown?: (message: string) => void; // drill-down: открывает чат с разбивкой шага
 }
 
-export function Timeline({ steps, onExecuteStep }: Props) {
+export function Timeline({ steps, onExecuteStep, onDrillDown }: Props) {
   const [doneSteps, setDoneSteps] = useState<Set<number>>(new Set());
 
   const toggleDone = (day: number, e: React.MouseEvent) => {
@@ -69,10 +70,15 @@ export function Timeline({ steps, onExecuteStep }: Props) {
                 {/* Контент шага */}
                 <div className="flex-1 pt-2">
                   <div
+                    onClick={() => {
+                      if (!isDone && onDrillDown) {
+                        onDrillDown(`Разбери для меня задачу «${step.task}» на конкретные подшаги. Я новичок и не очень понимаю что именно нужно делать. Объясни с нуля: что именно нужно сделать, с чего начать, что нужно для этого иметь?`);
+                      }
+                    }}
                     className={`border rounded-xl p-3 transition-all duration-300
                                 ${isDone
                                   ? 'bg-green-500/5 border-green-500/20 opacity-60'
-                                  : 'bg-white/5 border-white/10 group-hover:bg-white/10 group-hover:border-cyan-500/30'
+                                  : 'bg-white/5 border-white/10 group-hover:bg-white/10 group-hover:border-cyan-500/30 cursor-pointer'
                                 }`}
                   >
                     <p className={`font-medium ${isDone ? 'line-through text-gray-400' : 'text-gray-100'}`}>
@@ -83,16 +89,10 @@ export function Timeline({ steps, onExecuteStep }: Props) {
                         <span>⏱</span>
                         {step.duration}
                       </p>
-                      {!isDone && onExecuteStep && (
-                        <button
-                          onClick={() => onExecuteStep(step)}
-                          className="text-xs px-3 py-1 bg-gradient-to-r from-cyan-500/20 to-purple-500/20
-                                     border border-cyan-500/30 text-cyan-400 rounded-lg
-                                     hover:from-cyan-500/30 hover:to-purple-500/30 hover:border-cyan-400
-                                     transition-all duration-200 whitespace-nowrap"
-                        >
-                          Помочь выполнить →
-                        </button>
+                      {!isDone && (onDrillDown || onExecuteStep) && (
+                        <span className="text-xs text-cyan-500/70 italic">
+                          нажми чтобы разобрать →
+                        </span>
                       )}
                     </div>
                   </div>

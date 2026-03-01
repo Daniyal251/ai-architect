@@ -8,7 +8,31 @@
       "Bash(pip install -r requirements.txt -q)",
       "Bash(npm install react-router-dom --save)",
       "Bash(npx tsc --noEmit)",
-      "Bash(echo \"EXIT: $?\")"
+      "Bash(echo \"EXIT: $?\")",
+      "Bash(npm run build)",
+      "Bash(ssh -V)",
+      "Bash(ssh -o StrictHostKeyChecking=no -o ConnectTimeout=15 -o BatchMode=no u3415770@31.31.197.14 \"python3 --version && ls /www/aiarchi.ru/ && echo DONE\" 2)",
+      "Bash(1:*)",
+      "Bash(pip install paramiko)",
+      "Bash(pip3 install paramiko)",
+      "Bash(python3 -m pip install paramiko)",
+      "Bash(python3 -m pip install paramiko --quiet)",
+      "Bash(python3 -c \"import paramiko; print\\(''OK''\\)\")",
+      "Bash(python3:*)",
+      "Bash(npm install jspdf html2canvas)",
+      "WebFetch(domain:chadgpt.ru)",
+      "Bash(python -c \"import ast; ast.parse\\(open\\(''app/main.py''\\).read\\(\\)\\); print\\(''Синтаксис OK''\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\(''app/main.py'', encoding=''utf-8''\\).read\\(\\)\\); print\\(''OK''\\)\")",
+      "Bash(python -c \":*)",
+      "Bash(taskkill /PID 244756 /F)",
+      "Bash(taskkill /PID 158292 /F)",
+      "Bash(taskkill /PID 158292 /F sleep 2 netstat -ano)",
+      "Bash(cmd.exe /c \"taskkill /PID 244756 /F & taskkill /PID 158292 /F\")",
+      "Bash(netstat -ano)",
+      "Bash(venv/Scripts/python.exe -c \":*)",
+      "Bash(git add backend/app/main.py frontend/src/pages/AdminPage.tsx)",
+      "Bash(git commit:*)",
+      "Bash(git add -A)"
     ]
   }
 }
